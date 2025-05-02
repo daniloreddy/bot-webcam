@@ -1,0 +1,25 @@
+{
+  "camera_index": 0,
+  "actions": {
+    "1": {
+      "path": "img/action_1.png",
+      "requires": [
+        "3"
+      ]
+    },
+    "2": {
+      "path": "img/action_2.png"
+    },
+    "3": {
+      "path": "img/action_3.png"
+    },
+    "4": {
+      "path": "img/action_4.png"
+    }
+  },
+  "camera_name": "USB Camera",
+  "cooldown": 1.0,
+  "threshold": 0.85,
+  "ip": "192.168.172.89",
+  "port": 12345
+}
