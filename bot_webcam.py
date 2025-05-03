@@ -10,7 +10,17 @@ from pygrabber.dshow_graph import FilterGraph
 import cv2
 
 # --- Headless mode detection ---
-headless = not os.environ.get("DISPLAY") and os.name != "nt"
+HEADLESS = not os.environ.get("DISPLAY") and os.name != "nt"
+CONFIG_PATH = "config.json"
+CONFIG_DEFAULTS = {
+    "window_size": [1280, 720],
+    "sleep": 0.2,
+    "cooldown": 1.0,
+    "threshold": 0.85,
+    "ip": "192.168.172.89",
+    "port": 12345,
+}
+DEF_FONT=cv2.FONT_HERSHEY_SIMPLEX
 
 # --- Argomenti da linea di comando ---
 parser = argparse.ArgumentParser(description="Webcam bot per riconoscimento immagini")
@@ -61,24 +71,46 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-CONFIG_PATH = "config.json"
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# --- Gestione reset configurazione ---
+if args.reset_config and os.path.exists(CONFIG_PATH):
+    os.remove(CONFIG_PATH)
+    print("🔁 Configurazione azzerata.")
 
+# --- Carica o aggiorna config iniziale ---
+config={}
+if os.path.exists(CONFIG_PATH):
+    with open(CONFIG_PATH, "r", encoding="utf-8") as config_file:
+        config =  json.load(config_file)
+
+config["cooldown"] = (
+    args.cooldown
+    if args.cooldown != parser.get_default("cooldown")
+    else config.get("cooldown", CONFIG_DEFAULTS["cooldown"])
+)
+config["threshold"] = (
+    args.threshold
+    if args.threshold != parser.get_default("threshold")
+    else config.get("threshold", CONFIG_DEFAULTS["threshold"])
+)
+config["ip"] = (
+    args.ip if args.ip != parser.get_default("ip") else config.get("ip", CONFIG_DEFAULTS["ip"])
+)
+config["port"] = (
+    args.port
+    if args.port != parser.get_default("port")
+    else config.get("port", CONFIG_DEFAULTS["port"])
+)
+config["sleep"] = config.get("sleep", CONFIG_DEFAULTS["sleep"])
+config["window_size"] = config.get("window_size", CONFIG_DEFAULTS["window_size"])
+
+UDP_IP = config["ip"]
+UDP_PORT = config["port"]
 
 # --- Utility finestra ---
-def resize_window(name, w_size, h_size):
-    if not headless:
-        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(name, w_size, h_size)
-
-
-# --- Utility config ---
-def load_config():
-    if not os.path.exists(CONFIG_PATH):
-        return {}
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
+def resize_window(name, width, height):
+    if not HEADLESS:
+        cv2.namedWindow(name, cv2.WINDOW_KEEPRATIO)
+        cv2.resizeWindow(name, width, height)
 
 def save_config(data):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -87,31 +119,31 @@ def save_config(data):
 
 # --- Camera selection ---
 def load_or_select_camera(force_select=False, force_resolution=False):
-    fg = FilterGraph()
-    devs = fg.get_input_devices()
-    aval = []
+    filter_group = FilterGraph()
+    devices = filter_group.get_input_devices()
+    avalaible = []
     print("🎥 Scansione webcam disponibili...")
-    for idx, name in enumerate(devs):
+    for idx, name in enumerate(devices):
         try:
-            capabilities = fg.get_input_device_capabilities(idx)
+            cap = filter_group.get_input_device_capabilities(idx)
         except:
-            capabilities = []
-        vc = cv2.VideoCapture(idx)
-        if vc.read()[0]:
-            aval.append((idx, name, capabilities))
-            vc.release()
-    if not aval:
+            cap = []
+        capture = cv2.VideoCapture(idx)
+        if capture.read()[0]:
+            avalaible.append((idx, name, cap))
+        capture.release()
+    if not avalaible:
         print("❌ Nessuna webcam funzionante trovata.")
         sys.exit(1)
     if not force_select and "camera_name" in config:
-        for idx, name, caps in aval:
+        for idx, name, capabilities in avalaible:
             if name == config["camera_name"]:
                 print(f"✅ Webcam trovata per nome: '{name}' (index {idx})")
-                selected_caps = caps
+                caps = capabilities
                 break
         else:
-            selected = int(input("👉 Seleziona la webcam da usare: "))
-            idx, name, selected_caps = aval[selected]
+            dev = int(input("👉 Seleziona la webcam da usare: "))
+            idx, name, caps = avalaible[dev]
             config["camera_index"] = idx
             config["camera_name"] = name
             save_config(config)
@@ -119,55 +151,51 @@ def load_or_select_camera(force_select=False, force_resolution=False):
             return idx
     else:
         print("📷 Webcam disponibili:")
-        for i, (idx, name, _) in enumerate(aval):
-            print(f"{i}: {name} (index {idx})")
-        selected = int(input("👉 Seleziona la webcam da usare: "))
-        idx, name, selected_caps = aval[selected]
+        for (idx, name, _) in enumerate(avalaible):
+            print(f"{idx}: {name}")
+        dev = int(input("👉 Seleziona la webcam da usare: "))
+        idx, name, caps = avalaible[dev]
         config["camera_index"] = idx
         config["camera_name"] = name
         save_config(config)
         print(f"💾 Webcam selezionata salvata: '{name}' (index {idx})")
     if force_resolution or "camera_resolution" not in config:
-        if not selected_caps:
+        if not caps:
             print(
                 "⚠️ Nessuna risoluzione disponibile via pygrabber, uso risoluzione di default."
             )
         else:
             print("📏 Risoluzioni disponibili:")
-            for i, capab in enumerate(selected_caps):
-                print(f"  {i}: {capab['width']}x{capab['height']} @ {capab['max_fps']} fps")
+            for idx, capab in enumerate(caps):
+                print(f"  {idx}: {capab['width']}x{capab['height']} @ {capab['max_fps']} fps")
             selected_res = int(input("👉 Seleziona la risoluzione da usare: "))
-            selected_width = selected_caps[selected_res]["width"]
-            selected_height = selected_caps[selected_res]["height"]
+            selected_width = caps[selected_res]["width"]
+            selected_height = caps[selected_res]["height"]
             config["camera_resolution"] = [selected_width, selected_height]
             save_config(config)
     return idx
 
 
 # --- ROI extraction utility ---
-# i: image
-# r: roi info set
-def extract_roi(i, r):
-    if not r:
-        return i
-    x, y, w, h = r
-    return i[y : y + h, x : x + w]
+def extract_roi(image, roi):
+    if not roi:
+        return image
+    x, y, w, h = roi
+    return image[y : y + h, x : x + w]
 
 
 # --- Match ROI-aware ---
-# k: key
-# ad: action data
-def get_roi_for_key(k, ad):
-    action_info = ad.get(k, {})
+def get_roi_for_key(key, action_data):
+    action_info = action_data.get(key, {})
     return action_info.get("roi", None)
 
 
 # --- Template matching con ROI ---
-def match_with_roi(frm, template, threshold, r=None):
-    if r is not None:
-        region = extract_roi(frm, r)
+def match_with_roi(frame, template, threshold, roi=None):
+    if roi is not None:
+        region = extract_roi(frame, roi)
     else:
-        region = frm
+        region = frame
     result = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(result)
     if max_val >= threshold:
@@ -176,291 +204,234 @@ def match_with_roi(frm, template, threshold, r=None):
 
 
 # --- Ciclo principale ---
-# frm: frame
-# tmp: template
-# cfg: config
-# ac: action data
-# ds: dimensions
-# lst: last sent time
-# a: args
-def process_frame(
-    frm, tmp, cfg, ad, ds, lst, a
-):
-    # ⚠️ L'ordine delle azioni nel file config.json è importante:
-    #    se un'azione ha 'requires' riferiti a un'altra azione che viene dopo,
-    #    potrebbe non attivarsi anche se il match è valido.
-    matched_keys = set()
-    gray_frame = cv2.cvtColor(frm, cv2.COLOR_BGR2GRAY)
-    for k, template_gray in tmp.items():
-        r = get_roi_for_key(k, ad)
-        matched, max_val, max_loc = match_with_roi(
-            gray_frame, template_gray, cfg["threshold"], r
-        )
+def process_frame(frame, templates, action_data, dimensions, last_sent_time, sock):
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    pre_matches = {}
+    confirmed_matches = {}
 
-        # Draw ROI regardless of match
-        if r:
-            x, y, w, h = r
-            cv2.rectangle(frm, (x, y), (x + w, y + h), (255, 255, 0), 1)
-            cv2.putText(
-                frm,
-                f"{k}",
-                (x, y - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 0),
-                1,
-            )
+    # Fase 1: Rilevamento iniziale (senza dipendenze)
+    for key, template in templates.items():
+        roi = action_data.get(key, {}).get("roi")
+        matched, max_val, max_loc = match_with_roi(gray_frame, template, config["threshold"], roi)
 
-        if not matched:
+        if roi:
+            x, y, w, h = roi
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
+            # per ora lascio commentato
+            #cv2.putText(frame, key, (x, y - 5), DEF_FONT, 1, (255, 255, 0), 1)
+
+        if matched:
+            pre_matches[key] = (max_val, max_loc)
+
+    # Fase 2: Validazione con dipendenze
+    for key, (max_val, max_loc) in pre_matches.items():
+        action = action_data.get(key, {})
+        required = set(action.get("requires", []))
+        required_not = set(action.get("requires_not", []))
+
+        if not required.issubset(pre_matches.keys()):
+            continue
+        if required_not & pre_matches.keys():
             continue
 
-        matched_keys.add(k)
-        action_info = ad.get(k, {})
-        if not action_info.get("requires", set()).issubset(matched_keys):
-            continue
-        if action_info.get("requires_not", set()) & matched_keys:
-            continue
+        confirmed_matches[key] = (max_val, max_loc)
+
+    # Fase 3: Visualizzazione ed invio tasti
+    for key, (max_val, max_loc) in confirmed_matches.items():
+
         now = time.time()
-        if (
-            not a.test
-            and k in lst
-            and (now - lst[k]) < cfg["cooldown"]
-        ):
+        if not args.test and key in last_sent_time and (now - last_sent_time[key]) < config["cooldown"]:
             continue
-        if not a.test:
-            print(
-                f"✅ Match '{k}' ({max_val:.2f}) → invio a {cfg['ip']}:{cfg['port']}"
-            )
-            sock.sendto(k.encode(), (cfg["ip"], cfg["port"]))
-            lst[k] = now
-        top_left = max_loc
-        w, h = ds[k]
-        if r:
-            top_left = (top_left[0] + r[0], top_left[1] + r[1])
+
+        if not args.test and action_data[key].get("send", True):
+            print(f"✅ Match '{key}' ({max_val:.2f}) → invio a {config['ip']}:{config['port']}")
+            sock.sendto(key.encode(), (config["ip"], config["port"]))
+            last_sent_time[key] = now
+
+        roi = action_data[key].get("roi")
+        w, h = dimensions[key]
+        top_left = (max_loc[0] + roi[0], max_loc[1] + roi[1]) if roi else max_loc
         bottom_right = (top_left[0] + w, top_left[1] + h)
-        cv2.rectangle(frm, top_left, bottom_right, (0, 255, 0), 2)
-        label = f"{k} ({max_val:.2f})"
-        cv2.putText(
-            frm,
-            label,
-            (top_left[0], top_left[1] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-        )
+        cv2.rectangle(frame, top_left, bottom_right, (0, 255, 0), 2)
+        label = f"{key} ({max_val:.2f})"
+        cv2.putText(frame, label, (top_left[0], top_left[1] - 10), DEF_FONT, 0.6, (0, 255, 0), 2)
 
-
-CONFIG_PATH = "config.json"
-
-# --- Gestione reset configurazione ---
-if args.reset_config and os.path.exists(CONFIG_PATH):
-    os.remove(CONFIG_PATH)
-    print("🔁 Configurazione azzerata.")
-
-# --- Carica o aggiorna config iniziale ---
-config = load_config()
-DEFAULTS = {
-    "window_size": [1280, 720],
-    "sleep": 0.2,
-    "cooldown": 1.0,
-    "threshold": 0.85,
-    "ip": "192.168.172.89",
-    "port": 12345,
-}
-config["cooldown"] = (
-    args.cooldown
-    if args.cooldown != parser.get_default("cooldown")
-    else config.get("cooldown", DEFAULTS["cooldown"])
-)
-config["threshold"] = (
-    args.threshold
-    if args.threshold != parser.get_default("threshold")
-    else config.get("threshold", DEFAULTS["threshold"])
-)
-config["ip"] = (
-    args.ip if args.ip != parser.get_default("ip") else config.get("ip", DEFAULTS["ip"])
-)
-config["port"] = (
-    args.port
-    if args.port != parser.get_default("port")
-    else config.get("port", DEFAULTS["port"])
-)
-config["sleep"] = config.get("sleep", DEFAULTS["sleep"])
-config["window_size"] = config.get("window_size", DEFAULTS["window_size"])
-save_config(config)
-
-UDP_IP = config["ip"]
-UDP_PORT = config["port"]
-
-# --- Configurazione UDP ---
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-CAMERA_INDEX = load_or_select_camera(
-    force_select=args.reset_camera, force_resolution=args.reset_resolution
-)
-cap = cv2.VideoCapture(CAMERA_INDEX)
-
-# Applica la risoluzione scelta se disponibile
-if "camera_resolution" in config:
-    width, height = config["camera_resolution"]
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-
-width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-config["camera_resolution"] = [int(width), int(height)]
-save_config(config)
-print("📏 Risoluzione selezionata:")
-print("   Larghezza:", cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-print("   Altezza:  ", cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-# --- Modalità SHOT ---
-if args.shot:
-    print("🎥 Premi SPAZIO per scattare, ESC per uscire")
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            continue
-        if not headless:
-            resize_window(
-                "Scatta immagine", config["window_size"][0], config["window_size"][1]
-            )
-            cv2.imshow("Scatta immagine", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:
-            break
-        elif key == 32:
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            os.makedirs("img", exist_ok=True)
-            filename = f"img/screenshot-{timestamp}.png"
-            cv2.imwrite(filename, frame)
-            print(f"📸 Immagine salvata in {filename}")
-            break
-    cap.release()
-    cv2.destroyAllWindows()
-    sys.exit()
-
-# --- Caricamento azioni ---
-actions = config.get("actions", {})
-if not actions:
-    print("❌ Nessuna azione definita in config.json → 'actions'")
-    sys.exit(1)
-
-print("🔧 Azioni caricate:")
-for key in sorted(actions):
-    entry = actions[key]
-    print(f"  '{key}' → {entry['path'] if isinstance(entry, dict) else entry}")
-
-# --- Precaricamento template ---
-templates = {}
-dimensions = {}
-action_data = {}
-
-for key, info in actions.items():
-    if isinstance(info, str):
-        path = info
-        requires = []
-        requires_not = []
-        roi = None
-    else:
-        path = info.get("path")
-        requires = info.get("requires", [])
-        requires_not = info.get("requires_not", [])
-        roi = info.get("roi")
-        if roi and (not isinstance(roi, list) or len(roi) != 4 or not all(isinstance(x, int) for x in roi)):
-            print(f"⚠️ ROI non valido per '{key}': {roi}")
-            continue
-
-    if not os.path.exists(path):
-        print(f"⚠️ Immagine mancante per '{key}': {path}")
-        continue
-    img = cv2.imread(path)
-    if img is None:
-        print(f"⚠️ Impossibile caricare '{path}'")
-        continue
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    templates[key] = gray
-    dimensions[key] = gray.shape[::-1]
-    action_data[key] = {
-        "requires": set(requires),
-        "requires_not": set(requires_not),
-        "roi": roi,
-        "path": path,
-    }
-
-# --- Ciclo principale ---
-print("🔍 Bot attivo. Premi Q per uscire.")
-last_sent_time = {}
-
-if not headless:
-    resize_window("Webcam Bot", config["window_size"][0], config["window_size"][1])
-
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        continue
-
-    process_frame(
-        frame,
-        templates,
-        config,
-        action_data,
-        dimensions,
-        last_sent_time,
-        args,
-    )
-
-    if not headless:
+    if not HEADLESS:
+        label = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
         cv2.putText(
             frame,
-            f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s",
-            (10, 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
+            label,
+            (10, 30),
+            DEF_FONT,
+            1,
             (0, 0, 0),
             2,
         )
         cv2.putText(
             frame,
-            f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s",
-            (10, 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
+            label,
+            (10, 30),
+            DEF_FONT,
+            1,
             (255, 255, 255),
             1,
         )
         cv2.imshow("Webcam Bot", frame)
 
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord("q"):
-        break
-    elif key == ord(","):
-        config["cooldown"] = min(10.0, config.get("cooldown", 1.0) + 0.1)
-        save_config(config)
-        print(f"⏫ Cooldown aumentato: {config['cooldown']:.2f}s")
-    elif key == ord("."):
-        config["cooldown"] = max(0.0, config.get("cooldown", 1.0) - 0.1)
-        save_config(config)
-        print(f"⏬ Cooldown diminuito: {config['cooldown']:.2f}s")
-    elif key == ord("*"):
-        config["sleep"] = min(5.0, config.get("sleep", 0.2) + 0.05)
-        save_config(config)
-        print(f"⏫ Sleep aumentato: {config['sleep']:.2f}s")
-    elif key == ord("/"):
-        config["sleep"] = max(0.0, config.get("sleep", 0.2) - 0.05)
-        save_config(config)
-        print(f"⏬ Sleep diminuito: {config['sleep']:.2f}s")
-    elif key == ord("+") or key == ord("="):
-        config["threshold"] = min(1.0, config.get("threshold", 0.85) + 0.01)
-        save_config(config)
-        print(f"🔼 Threshold aumentato: {config['threshold']:.2f}")
-    elif key == ord("-"):
-        config["threshold"] = max(0.0, config.get("threshold", 0.85) - 0.01)
-        save_config(config)
-        print(f"🔽 Threshold diminuito: {config['threshold']:.2f}")
+def main():
 
-    time.sleep(config["sleep"])
+    # --- Configurazione UDP ---
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-cap.release()
-cv2.destroyAllWindows()
+    cap = cv2.VideoCapture(load_or_select_camera(args.reset_camera, args.reset_resolution))
+
+    # Applica la risoluzione scelta se disponibile
+    if "camera_resolution" in config:
+        width, height = config["camera_resolution"]
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    config["camera_resolution"] = [int(width), int(height)]
+    save_config(config)
+    print("📏 Risoluzione selezionata:")
+    print("   Larghezza:", cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    print("   Altezza:  ", cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # --- Modalità SHOT ---
+    if args.shot:
+        print("🎥 Premi SPAZIO per scattare, ESC per uscire")
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            if not HEADLESS:
+                resize_window(
+                    "Scatta immagine", config["window_size"][0], config["window_size"][1]
+                )
+                cv2.imshow("Scatta immagine", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:
+                break
+            if key == 32:
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                os.makedirs("img", exist_ok=True)
+                filename = f"img/screenshot-{timestamp}.png"
+                cv2.imwrite(filename, frame)
+                print(f"📸 Immagine salvata in {filename}")
+                break
+        cap.release()
+        cv2.destroyAllWindows()
+        return
+
+    # --- Caricamento azioni ---
+    actions = config.get("actions", {})
+    if not actions:
+        print("❌ Nessuna azione definita in config.json → 'actions'")
+        return
+
+    print("🔧 Azioni caricate:")
+    for key in sorted(actions):
+        entry = actions[key]
+        print(f"  '{key}' → {entry['path'] if isinstance(entry, dict) else entry}")
+
+    # --- Precaricamento template ---
+    templates = {}
+    dimensions = {}
+    action_data = {}
+
+    for key, info in actions.items():
+        if isinstance(info, str):
+            path = info
+            requires = []
+            requires_not = []
+            roi = None
+        else:
+            path = info.get("path")
+            requires = info.get("requires", [])
+            requires_not = info.get("requires_not", [])
+            roi = info.get("roi")
+            if roi and (not isinstance(roi, list) or len(roi) != 4 or not all(isinstance(x, int) for x in roi)):
+                print(f"⚠️ ROI non valido per '{key}': {roi}")
+                continue
+
+        if not os.path.exists(path):
+            print(f"⚠️ Immagine mancante per '{key}': {path}")
+            continue
+        img = cv2.imread(path)
+        if img is None:
+            print(f"⚠️ Impossibile caricare '{path}'")
+            continue
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        templates[key] = gray
+        dimensions[key] = gray.shape[::-1]
+        action_data[key] = {
+            "requires": set(requires),
+            "requires_not": set(requires_not),
+            "roi": roi,
+            "path": path,
+            "send": info.get("send", True),  # default = True
+}
+
+
+    # --- Ciclo principale ---
+    print("🔍 Bot attivo. Premi Q per uscire.")
+    last_sent_time = {}
+
+    if not HEADLESS:
+        resize_window("Webcam Bot", config["window_size"][0], config["window_size"][1])
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        process_frame(
+            frame,
+            templates,
+            action_data,
+            dimensions,
+            last_sent_time,
+            sock
+        )
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+
+        dirty_config = False
+        if key == ord(","):
+            config["cooldown"] = min(10.0, config.get("cooldown", 1.0) + 0.1)
+            dirty_config = True
+            print(f"⏫ Cooldown aumentato: {config['cooldown']:.2f}s")
+        elif key == ord("."):
+            config["cooldown"] = max(0.0, config.get("cooldown", 1.0) - 0.1)
+            dirty_config = True
+            print(f"⏬ Cooldown diminuito: {config['cooldown']:.2f}s")
+        elif key == ord("*"):
+            config["sleep"] = min(5.0, config.get("sleep", 0.2) + 0.05)
+            dirty_config = True
+            print(f"⏫ Sleep aumentato: {config['sleep']:.2f}s")
+        elif key == ord("/"):
+            config["sleep"] = max(0.0, config.get("sleep", 0.2) - 0.05)
+            dirty_config = True
+            print(f"⏬ Sleep diminuito: {config['sleep']:.2f}s")
+        elif key == ord("+") or key == ord("="):
+            config["threshold"] = min(1.0, config.get("threshold", 0.85) + 0.01)
+            dirty_config = True
+            print(f"🔼 Threshold aumentato: {config['threshold']:.2f}")
+        elif key == ord("-"):
+            config["threshold"] = max(0.0, config.get("threshold", 0.85) - 0.01)
+            dirty_config = True
+            print(f"🔽 Threshold diminuito: {config['threshold']:.2f}")
+
+        if dirty_config:
+            save_config(config)
+        time.sleep(config["sleep"])
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    main()
