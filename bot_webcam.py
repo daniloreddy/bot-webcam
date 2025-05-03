@@ -1,4 +1,3 @@
-import sys
 import socket
 import time
 import os
@@ -15,8 +14,6 @@ try:
 except ImportError:
     win32gui = None
 
-# --- Headless mode detection ---
-HEADLESS = not os.environ.get("DISPLAY") and os.name != "nt"
 CONFIG_PATH = "config.json"
 DEFAULTS = {
     "window_size": [1280, 720],
@@ -26,22 +23,64 @@ DEFAULTS = {
     "ip": "192.168.172.89",
     "port": 12345,
     "headless": None,
-    "game_window_title": None
+    "game_window_title": None,
 }
-DEF_FONT=cv2.FONT_HERSHEY_SIMPLEX
+DEF_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 # --- Argomenti da linea di comando ---
 parser = argparse.ArgumentParser(description="Webcam bot per riconoscimento immagini")
-parser.add_argument("--shot", "-s", action="store_true", help="Scatta immagine dalla webcam e salva in img/")
-parser.add_argument("--test", "-t", action="store_true", help="Modalità test: non invia, stampa solo")
-parser.add_argument("--reset-camera", "-r", action="store_true", help="Forza la selezione della webcam")
-parser.add_argument("--reset-resolution", action="store_true", help="Forza la selezione della risoluzione della webcam")
-parser.add_argument("--reset-config", action="store_true", help="Resetta tutte le impostazioni salvate in config.json")
-parser.add_argument("--set-window-title", action="store_true", help="Permette di scegliere la finestra del gioco da monitorare")
-parser.add_argument("--cooldown", type=float, default=1.0, help="Secondi di pausa tra due invii dello stesso tasto")
-parser.add_argument("--threshold", type=float, default=0.85, help="Soglia di matching tra 0.0 e 1.0")
-parser.add_argument("--ip", "-i", type=str, default="192.168.172.89", help="Indirizzo IP del dispositivo di destinazione")
-parser.add_argument("--port", "-p", type=int, default=12345, help="Porta UDP del dispositivo di destinazione")
+parser.add_argument(
+    "--shot",
+    "-s",
+    action="store_true",
+    help="Scatta immagine dalla webcam e salva in img/",
+)
+parser.add_argument(
+    "--test", "-t", action="store_true", help="Modalità test: non invia, stampa solo"
+)
+parser.add_argument(
+    "--reset-camera", "-rc", action="store_true", help="Forza la selezione della webcam"
+)
+parser.add_argument(
+    "--reset-resolution",
+    "-rr",
+    action="store_true",
+    help="Forza la selezione della risoluzione della webcam",
+)
+parser.add_argument(
+    "--reset-config",
+    "-r",
+    action="store_true",
+    help="Resetta tutte le impostazioni salvate in config.json",
+)
+parser.add_argument(
+    "--cooldown",
+    "-c",
+    type=float,
+    default=1.0,
+    help="Secondi di pausa tra due invii dello stesso tasto",
+)
+parser.add_argument(
+    "--threshold",
+    "-T",
+    type=float,
+    default=0.85,
+    help="Soglia di matching tra 0.0 e 1.0",
+)
+parser.add_argument(
+    "--ip",
+    "-i",
+    type=str,
+    default="192.168.172.89",
+    help="Indirizzo IP del dispositivo di destinazione",
+)
+parser.add_argument(
+    "--port",
+    "-p",
+    type=int,
+    default=12345,
+    help="Porta UDP del dispositivo di destinazione",
+)
 args = parser.parse_args()
 
 # --- Gestione reset configurazione ---
@@ -55,22 +94,49 @@ if os.path.exists(CONFIG_PATH):
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-config["cooldown"] = args.cooldown if args.cooldown != parser.get_default("cooldown") else config.get("cooldown", DEFAULTS["cooldown"])
-config["threshold"] = args.threshold if args.threshold != parser.get_default("threshold") else config.get("threshold", DEFAULTS["threshold"])
-config["ip"] = args.ip if args.ip != parser.get_default("ip") else config.get("ip", DEFAULTS["ip"])
-config["port"] = args.port if args.port != parser.get_default("port") else config.get("port", DEFAULTS["port"])
+config["cooldown"] = (
+    args.cooldown
+    if args.cooldown != parser.get_default("cooldown")
+    else config.get("cooldown", DEFAULTS["cooldown"])
+)
+config["threshold"] = (
+    args.threshold
+    if args.threshold != parser.get_default("threshold")
+    else config.get("threshold", DEFAULTS["threshold"])
+)
+config["ip"] = (
+    args.ip if args.ip != parser.get_default("ip") else config.get("ip", DEFAULTS["ip"])
+)
+config["port"] = (
+    args.port
+    if args.port != parser.get_default("port")
+    else config.get("port", DEFAULTS["port"])
+)
 config["sleep"] = config.get("sleep", DEFAULTS["sleep"])
 config["window_size"] = config.get("window_size", DEFAULTS["window_size"])
+config["game_window_title"] = config.get(
+    "game_window_title", DEFAULTS["game_window_title"]
+)
 
 # HEADLESS: usa valore da config se presente, altrimenti autodetect
-if "headless" in config:
-    HEADLESS = bool(config["headless"])
-else:
+HEADLESS = config.get("headless")
+if HEADLESS is None:
     HEADLESS = not os.environ.get("DISPLAY") and os.name != "nt"
     config["headless"] = HEADLESS
+else:
+    HEADLESS = bool(HEADLESS)
+
 
 UDP_IP = config["ip"]
 UDP_PORT = config["port"]
+
+
+def is_game_window_focused(should_check_focus):
+    if not should_check_focus:
+        return True
+    current = get_foreground_window_title()
+    return current and current.lower() == config["game_window_title"].lower()
+
 
 # --- Selezione finestra gioco ---
 def get_foreground_window_title():
@@ -79,21 +145,26 @@ def get_foreground_window_title():
     hwnd = win32gui.GetForegroundWindow()
     return win32gui.GetWindowText(hwnd)
 
+
 def list_open_windows():
     titles = []
+
     def enum_handler(hwnd, _):
         if win32gui.IsWindowVisible(hwnd):
             title = win32gui.GetWindowText(hwnd)
             if title:
                 titles.append(title)
+
     win32gui.EnumWindows(enum_handler, None)
     return titles
 
+
 # --- Utility finestra ---
-def resize_window(name, width, height):
+def resize_win(name, width, height):
     if not HEADLESS:
         cv2.namedWindow(name, cv2.WINDOW_KEEPRATIO)
         cv2.resizeWindow(name, width, height)
+
 
 def save_config(data):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -104,8 +175,10 @@ def save_config(data):
 def load_or_select_camera(force_select=False, force_resolution=False):
     filter_group = FilterGraph()
     devices = filter_group.get_input_devices()
-    avalaible = []
+    available = []
     print("🎥 Scansione webcam disponibili...")
+
+    # controlla che i dispositivi di input trovati siano utilizzabili
     for idx, name in enumerate(devices):
         try:
             cap = filter_group.get_input_device_capabilities(idx)
@@ -113,50 +186,75 @@ def load_or_select_camera(force_select=False, force_resolution=False):
             cap = []
         capture = cv2.VideoCapture(idx)
         if capture.read()[0]:
-            avalaible.append((idx, name, cap))
+            available.append((idx, name, cap))
         capture.release()
-    if not avalaible:
+
+    if not available:
         print("❌ Nessuna webcam funzionante trovata.")
-        sys.exit(1)
+        return
+
+    # Determina quale webcam usare
+    selected_idx = None
+    selected_name = None
+    selected_caps = []
+
     if not force_select and "camera_name" in config:
-        for idx, name, capabilities in avalaible:
+        for idx, name, caps in available:
             if name == config["camera_name"]:
                 print(f"✅ Webcam trovata per nome: '{name}' (index {idx})")
-                caps = capabilities
+                selected_idx, selected_name, selected_caps = idx, name, caps
                 break
-        else:
-            dev = int(input("👉 Seleziona la webcam da usare: "))
-            idx, name, caps = avalaible[dev]
-            config["camera_index"] = idx
-            config["camera_name"] = name
-            save_config(config)
-            print(f"💾 Webcam selezionata salvata: '{name}' (index {idx})")
-            return idx
-    else:
+
+    if selected_idx is None:
         print("📷 Webcam disponibili:")
-        for (idx, name, _) in enumerate(avalaible):
-            print(f"{idx}: {name}")
-        dev = int(input("👉 Seleziona la webcam da usare: "))
-        idx, name, caps = avalaible[dev]
-        config["camera_index"] = idx
-        config["camera_name"] = name
-        save_config(config)
-        print(f"💾 Webcam selezionata salvata: '{name}' (index {idx})")
+        for i, (idx, name, _) in enumerate(available):
+            print(f"{i}: {name}")
+        while True:
+            choice = input("👉 Seleziona la webcam da usare: ").strip()
+            if not choice.isdigit():
+                print("❌ Inserisci solo un numero valido.")
+                continue
+            dev = int(choice)
+            if 0 <= dev < len(available):
+                selected_idx, selected_name, selected_caps = available[dev]
+                config["camera_index"] = selected_idx
+                config["camera_name"] = selected_name
+                save_config(config)
+                print(
+                    f"💾 Webcam selezionata salvata: '{selected_name}' (index {selected_idx})"
+                )
+                break
+            else:
+                print(f"❌ Inserisci un numero compreso tra 0 e {len(available) - 1}.")
+
+    # Selezione risoluzione
     if force_resolution or "camera_resolution" not in config:
-        if not caps:
+        if not selected_caps:
             print(
                 "⚠️ Nessuna risoluzione disponibile via pygrabber, uso risoluzione di default."
             )
         else:
             print("📏 Risoluzioni disponibili:")
-            for idx, capab in enumerate(caps):
-                print(f"  {idx}: {capab['width']}x{capab['height']} @ {capab['max_fps']} fps")
-            selected_res = int(input("👉 Seleziona la risoluzione da usare: "))
-            selected_width = caps[selected_res]["width"]
-            selected_height = caps[selected_res]["height"]
-            config["camera_resolution"] = [selected_width, selected_height]
-            save_config(config)
-    return idx
+            for i, capab in enumerate(selected_caps):
+                print(
+                    f"  {i}: {capab['width']}x{capab['height']} @ {capab['max_fps']} fps"
+                )
+            while True:
+                res_input = input("👉 Seleziona la risoluzione da usare: ").strip()
+                if not res_input.isdigit():
+                    print("❌ Inserisci solo un numero valido.")
+                    continue
+                res = int(res_input)
+                if 0 <= res < len(selected_caps):
+                    selected_width = selected_caps[res]["width"]
+                    selected_height = selected_caps[res]["height"]
+                    config["camera_resolution"] = [selected_width, selected_height]
+                    save_config(config)
+                    break
+                else:
+                    print(f"❌ Inserisci un numero tra 0 e {len(selected_caps) - 1}.")
+
+    return selected_idx
 
 
 # --- ROI extraction utility ---
@@ -179,7 +277,10 @@ def match_with_roi(frame, template, threshold, roi=None):
         region = extract_roi(frame, roi)
     else:
         region = frame
-    result = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)
+    try:
+        result = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)
+    except:
+        return False, 0, None
     _, max_val, _, max_loc = cv2.minMaxLoc(result)
     if max_val >= threshold:
         return True, max_val, max_loc
@@ -187,7 +288,9 @@ def match_with_roi(frame, template, threshold, roi=None):
 
 
 # --- Ciclo principale ---
-def process_frame(frame, templates, action_data, dimensions, last_sent_time, sock):
+def process_frame(
+    frame, templates, action_data, dimensions, last_sent_time, sock, should_check_focus
+):
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     pre_matches = {}
     confirmed_matches = {}
@@ -195,13 +298,15 @@ def process_frame(frame, templates, action_data, dimensions, last_sent_time, soc
     # Fase 1: Rilevamento iniziale (senza dipendenze)
     for key, template in templates.items():
         roi = action_data.get(key, {}).get("roi")
-        matched, max_val, max_loc = match_with_roi(gray_frame, template, config["threshold"], roi)
+        matched, max_val, max_loc = match_with_roi(
+            gray_frame, template, config["threshold"], roi
+        )
 
         if roi:
             x, y, w, h = roi
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
             # per ora lascio commentato
-            #cv2.putText(frame, key, (x, y - 5), DEF_FONT, 1, (255, 255, 0), 1)
+            # cv2.putText(frame, key, (x, y - 5), DEF_FONT, 1, (255, 255, 0), 1)
 
         if matched:
             pre_matches[key] = (max_val, max_loc)
@@ -224,18 +329,20 @@ def process_frame(frame, templates, action_data, dimensions, last_sent_time, soc
 
         now = time.time()
         if not args.test:
-            if key in last_sent_time and (now - last_sent_time[key]) < config["cooldown"]:
+            if (
+                key in last_sent_time
+                and (now - last_sent_time[key]) < config["cooldown"]
+            ):
                 continue
 
             if not action_data[key].get("send", True):
                 continue
 
-            if config.get("game_window_title"):
-                current_title = get_foreground_window_title()
-                if current_title != config["game_window_title"]:
-                    continue
+            if is_game_window_focused(should_check_focus):
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                print(f"[{timestamp}] ✅ Match '{key}' ({max_val:.2f}) → invio a {config['ip']}:{config['port']}")
+                print(
+                    f"[{timestamp}] ✅ Match '{key}' ({max_val:.2f}) → invio a {config['ip']}:{config['port']}"
+                )
                 sock.sendto(key.encode(), (config["ip"], config["port"]))
                 last_sent_time[key] = now
 
@@ -245,29 +352,16 @@ def process_frame(frame, templates, action_data, dimensions, last_sent_time, soc
         bottom_right = (top_left[0] + w, top_left[1] + h)
         cv2.rectangle(frame, top_left, bottom_right, (0, 255, 0), 2)
         label = f"{key} ({max_val:.2f})"
-        cv2.putText(frame, label, (top_left[0], top_left[1] - 10), DEF_FONT, 0.6, (0, 255, 0), 2)
+        cv2.putText(
+            frame, label, (top_left[0], top_left[1] - 10), DEF_FONT, 0.6, (0, 255, 0), 2
+        )
 
     if not HEADLESS:
         label = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
-        cv2.putText(
-            frame,
-            label,
-            (10, 30),
-            DEF_FONT,
-            1,
-            (0, 0, 0),
-            2,
-        )
-        cv2.putText(
-            frame,
-            label,
-            (10, 30),
-            DEF_FONT,
-            1,
-            (255, 255, 255),
-            1,
-        )
+        cv2.putText(frame, label, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
+        cv2.putText(frame, label, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
         cv2.imshow("Webcam Bot", frame)
+
 
 def take_shot(cap):
     print("🎥 Premi SPAZIO per scattare, ESC per uscire")
@@ -276,11 +370,11 @@ def take_shot(cap):
         if not ret:
             continue
         if not HEADLESS:
-            resize_window(
+            resize_win(
                 "Scatta immagine", config["window_size"][0], config["window_size"][1]
             )
             cv2.imshow("Scatta immagine", frame)
-        
+
         key = cv2.waitKey(1) & 0xFF
         if key == 27:
             break
@@ -294,7 +388,11 @@ def take_shot(cap):
     cap.release()
     cv2.destroyAllWindows()
 
+
 def choose_monitored_window():
+    if win32gui is None:
+        print("⚠️ Funzionalità non disponibile su questo sistema.")
+        return
     titles = list_open_windows()
     if not titles:
         print("❌ Nessuna finestra attiva rilevata.")
@@ -316,12 +414,15 @@ def choose_monitored_window():
             print("❌ Scelta non valida. Riprova.")
     return
 
+
 def main():
 
     # --- Configurazione UDP ---
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    cap = cv2.VideoCapture(load_or_select_camera(args.reset_camera, args.reset_resolution))
+    cap = cv2.VideoCapture(
+        load_or_select_camera(args.reset_camera, args.reset_resolution)
+    )
 
     # Applica la risoluzione scelta se disponibile
     if "camera_resolution" in config:
@@ -342,7 +443,18 @@ def main():
         take_shot(cap)
         return
 
-    if args.set_window_title or not config.get("game_window_title"):
+    should_check_focus = True
+    game_window = config.get("game_window_title")
+
+    if game_window is None:
+        # Comportamento interattivo → richiesta all'utente
+        choose_monitored_window()
+        return
+
+    if game_window.lower() == "unused":
+        should_check_focus = False
+
+    if not config.get("game_window_title"):
         choose_monitored_window()
         return
 
@@ -373,7 +485,11 @@ def main():
             requires = info.get("requires", [])
             requires_not = info.get("requires_not", [])
             roi = info.get("roi")
-            if roi and (not isinstance(roi, list) or len(roi) != 4 or not all(isinstance(x, int) for x in roi)):
+            if roi and (
+                not isinstance(roi, list)
+                or len(roi) != 4
+                or not all(isinstance(x, int) for x in roi)
+            ):
                 print(f"⚠️ ROI non valido per '{key}': {roi}")
                 continue
 
@@ -396,13 +512,23 @@ def main():
         }
 
     # --- Ciclo principale ---
-    print("🔍 Bot attivo. Premi Q per uscire.")
-    print(f"🎯 Monitoraggio finestra: {config.get('game_window_title', '[nessuna]')}")
-    last_sent_time = {}
+    print("🔍 Bot attivo")
+    if should_check_focus:
+        print(f"🎯 Monitoraggio finestra: {game_window}")
+    else:
+        print("🎯 Nessun controllo finestra attiva (modalità 'Unused')")
 
     if not HEADLESS:
-        resize_window("Webcam Bot", config["window_size"][0], config["window_size"][1])
+        print("q --> esce applicazione")
+        print("+ --> aumenta threshold ricerca")
+        print("- --> dimiuisce threshold ricerca")
+        print(", --> aumenta cooldown")
+        print(". --> diminuisce cooldown")
+        print("* --> aumenta sleep frame")
+        print("/ --> dimiuisce sleep frame")
+        resize_win("Webcam Bot", config["window_size"][0], config["window_size"][1])
 
+    last_sent_time = {}
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -414,7 +540,8 @@ def main():
             action_data,
             dimensions,
             last_sent_time,
-            sock
+            sock,
+            should_check_focus,
         )
 
         dirty_config = False
@@ -455,5 +582,6 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

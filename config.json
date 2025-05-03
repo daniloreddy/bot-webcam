@@ -56,12 +56,12 @@
     1024,
     576
   ],
-  "camera_index": 2,
+  "headless": false,
+  "game_window_title": "Diablo Immortal",
+  "camera_index": 1,
   "camera_name": "OBS Virtual Camera",
   "camera_resolution": [
     1920,
     1080
-  ],
-  "headless": true,
-  "game_window_title": "Diablo Immortal"
+  ]
 }

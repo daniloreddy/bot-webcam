@@ -4,4 +4,7 @@ disable=
     import-error,
     missing-module-docstring,
     missing-function-docstring,
-    bare-except
+    bare-except,
+    redefined-outer-name,
+    line-too-long,
+    c-extension-no-member
