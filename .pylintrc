@@ -1,0 +1,7 @@
+[MESSAGES CONTROL]
+disable=
+    no-member,
+    import-error,
+    missing-module-docstring,
+    missing-function-docstring,
+    bare-except

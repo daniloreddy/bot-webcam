@@ -1,25 +1,58 @@
 {
-  "camera_index": 0,
   "actions": {
     "1": {
       "path": "img/action_1.png",
-      "requires": [
-        "3"
+      "roi": [
+        1617,
+        939,
+        92,
+        92
+      ],
+      "require": [
+        "0"
       ]
     },
     "2": {
-      "path": "img/action_2.png"
+      "path": "img/action_2.png",
+      "roi": [
+        1618,
+        846,
+        92,
+        92
+      ]
     },
-    "3": {
-      "path": "img/action_3.png"
+    "0": {
+      "path": "img/action_3.png",
+      "roi": [
+        1686,
+        775,
+        92,
+        92
+      ]
     },
     "4": {
-      "path": "img/action_4.png"
+      "path": "img/action_4.png",
+      "roi": [
+        1779,
+        776,
+        92,
+        92
+      ]
     }
   },
-  "camera_name": "USB Camera",
-  "cooldown": 1.0,
-  "threshold": 0.85,
+  "cooldown": 1.1,
+  "threshold": 0.7999999999999999,
   "ip": "192.168.172.89",
-  "port": 12345
+  "port": 12345,
+  "sleep": 1.3877787807814457e-17,
+  "window_size": [
+    1280,
+    720
+  ],
+  "camera_index": 2,
+  "camera_name": "OBS Virtual Camera",
+  "camera_resolution": [
+    1920,
+    1080
+  ]
 }

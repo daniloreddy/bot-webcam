@@ -1,0 +1,27 @@
+{
+  "camera_index": 0,
+  "actions": {
+    "1": {
+      "path": "img/action_1.png"
+    },
+    "2": {
+      "path": "img/action_2.png"
+    },
+    "3": {
+      "path": "img/action_3.png"
+    },
+    "4": {
+      "path": "img/action_4.png"
+    }
+  },
+  "camera_name": "USB Camera",
+  "cooldown": 1.0,
+  "threshold": 0.7899999999999999,
+  "ip": "192.168.172.89",
+  "port": 12345,
+  "camera_resolution": [
+    640,
+    480
+  ],
+  "sleep": 0.05000000000000002
+}
