@@ -1,3 +1,4 @@
+import sys
 import socket
 import time
 import os
@@ -27,7 +28,16 @@ DEFAULTS = {
     "port": 12345,
     "headless": None,
     "game_window_title": None,
+    "match_method": "TM_CCOEFF_NORMED",
+    "preprocess_invert": True,
+    "preprocess_blur": True,
+    "preprocess_equalize": True,
+    "match_sector_enabled": False,
+    "match_sector_grid": [2, 2],
+    "match_sector_min_success": 3,
+    "match_use_mask": False,
 }
+
 DEF_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 # --- Argomenti da linea di comando ---
@@ -120,6 +130,11 @@ config["window_size"] = config.get("window_size", DEFAULTS["window_size"])
 config["game_window_title"] = config.get(
     "game_window_title", DEFAULTS["game_window_title"]
 )
+config["match_method"] = config.get("match_method", DEFAULTS["match_method"])
+config["preprocess_invert"] = config.get("preprocess_invert", DEFAULTS["preprocess_invert"])
+config["preprocess_blur"] = config.get("preprocess_blur", DEFAULTS["preprocess_blur"])
+config["preprocess_equalize"] = config.get("preprocess_equalize", DEFAULTS["preprocess_equalize"])
+
 
 # HEADLESS: usa valore da config se presente, altrimenti autodetect
 HEADLESS = config.get("headless")
@@ -293,14 +308,24 @@ def preprocess_image(img):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
         gray = img
-    gray = cv2.bitwise_not(gray) #invertita
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0) # sfocata
-    equalized = cv2.equalizeHist(blurred) # equalizzata
-    return equalized
 
+    preprocessed = gray
+    if config.get("preprocess_invert", True):
+        preprocessed = cv2.bitwise_not(preprocessed)
+
+    if config.get("preprocess_blur", True):
+        preprocessed = cv2.GaussianBlur(preprocessed, (3, 3), 0)
+
+    if config.get("preprocess_equalize", True):
+        preprocessed = cv2.equalizeHist(preprocessed)
+
+    return preprocessed
 
 # --- Template matching con ROI ---
-def match_with_roi(frame, template, threshold, roi=None):
+def match_with_roi(frame, data, threshold):
+    template = data.get("template")
+    mask = data.get("mask_data")
+    roi = data.get("roi")
 
     if roi is not None:
         region = extract_roi(frame, roi)
@@ -309,18 +334,78 @@ def match_with_roi(frame, template, threshold, roi=None):
 
     region = preprocess_image(region)
     template = preprocess_image(template)
+    if mask is not None:
+        mask = preprocess_image(mask)
+
+    method_name = config.get("match_method", "TM_CCOEFF_NORMED")
+    method = getattr(cv2, method_name, cv2.TM_CCOEFF_NORMED)
+
+    use_mask = (
+        config.get("match_use_mask", False)
+        and mask is not None
+        and method_name in ["TM_CCORR_NORMED", "TM_SQDIFF", "TM_SQDIFF_NORMED"]
+    )
+
+    if config.get("match_sector_enabled", False):
+        return match_template_in_sectors(region, template, mask, threshold, use_mask, method)
+    else:
+        return match_template(region, template, mask, threshold, use_mask, method)
+
+
+def match_template(region, template, mask, threshold, use_mask, method):
 
     try:
-        result = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)
-        #result = cv2.matchTemplate(region, template, cv2.TM_CCORR_NORMED)
+        if use_mask:
+            result = cv2.matchTemplate(region, template, method, mask=mask)
+        else:
+            result = cv2.matchTemplate(region, template, method)
+
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val >= threshold:
+            return True, max_val, max_loc
+        return False, max_val, None
 
     except:
         return False, 0, None
 
-    _, max_val, _, max_loc = cv2.minMaxLoc(result)
-    if max_val >= threshold:
-        return True, max_val, max_loc
-    return False, max_val, None
+# --- Matching a settori ---
+def match_template_in_sectors(region, template, mask, threshold, use_mask, method):
+    rows, cols = config.get("match_sector_grid", [2, 2])
+    required = config.get("match_sector_min_success", 3)
+
+    h, w = template.shape
+    sector_w = w // cols
+    sector_h = h // rows
+
+    matches = 0
+    best_score = 0
+    best_loc = None
+
+    for i in range(rows):
+        for j in range(cols):
+            x = j * sector_w
+            y = i * sector_h
+            sector_template = template[y:y+sector_h, x:x+sector_w]
+            sector_mask = mask[y:y+sector_h, x:x+sector_w] if use_mask else None
+
+            try:
+                if use_mask:
+                    result = cv2.matchTemplate(region, sector_template, method, mask=sector_mask)
+                else:
+                    result = cv2.matchTemplate(region, sector_template, method)
+
+                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_loc = max_loc
+                if max_val >= threshold:
+                    matches += 1
+            except:
+                continue
+
+    if matches >= required:
+        return True, best_score, best_loc
+    return False, best_score, None
 
 
 def show_processed_rois(frame, gray_frame, pre_matches, action_data):
@@ -356,18 +441,16 @@ def show_processed_rois(frame, gray_frame, pre_matches, action_data):
 
 # --- Ciclo principale ---
 def process_frame(
-    frame, templates, action_data, dimensions, last_sent_time, sock, should_check_focus
+    frame, action_data, last_sent_time, sock, should_check_focus
 ):
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     pre_matches = {}
     confirmed_matches = {}
 
     # Fase 1: Rilevamento iniziale (senza dipendenze)
-    for key, template in templates.items():
-        roi = action_data.get(key, {}).get("roi")
-        matched, max_val, max_loc = match_with_roi(
-            gray_frame, template, config["threshold"], roi
-        )
+    for key, data in action_data.items():
+        roi = data.get("roi")
+        matched, max_val, max_loc = match_with_roi(gray_frame, data, config["threshold"])
 
         if roi:
             x, y, w, h = roi
@@ -413,8 +496,8 @@ def process_frame(
             last_sent_time[key] = now
 
         # Mostra comunque la grafica anche se non invia
-        roi = action_data[key].get("roi")
-        w, h = dimensions[key]
+        roi = data.get("roi")
+        w, h = data.get("dimensions")
         top_left = (max_loc[0] + roi[0], max_loc[1] + roi[1]) if roi else max_loc
         bottom_right = (top_left[0] + w, top_left[1] + h)
         cv2.rectangle(frame, top_left, bottom_right, (0, 255, 0), 2)
@@ -424,9 +507,17 @@ def process_frame(
         )
 
     if not HEADLESS:
-        label = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
-        cv2.putText(frame, label, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
-        cv2.putText(frame, label, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
+        label1 = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
+        label2 = f"Matching: {config.get('match_method', 'TM_CCOEFF_NORMED')}"
+        label3 = f"Invert:{'Y' if config['preprocess_invert'] else 'N'} | Blur:{'Y' if config['preprocess_blur'] else 'N'} | Eq:{'Y' if config['preprocess_equalize'] else 'N'} | Sector:{'Y' if config.get('match_sector_enabled') else 'N'} | Mask:{'Y' if config.get('match_use_mask') else 'N'}"
+
+
+        cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
+        cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
+        cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 0, 0), 2)
+        cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 255, 255), 1)
+        cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 0, 0), 2)
+        cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 255, 255), 1)        
 
         show_processed_rois(frame, gray_frame, pre_matches, action_data)
 
@@ -469,6 +560,7 @@ def choose_monitored_window():
         return
 
     print("🔍 Elenco delle finestre aperte:")
+    titles.append("Unused")
     for i, t in enumerate(titles):
         print(f"  {i}: {t}")
 
@@ -484,6 +576,76 @@ def choose_monitored_window():
             print("❌ Scelta non valida. Riprova.")
     return
 
+def handle_ocv_keys():
+    dirty_config = False
+
+    if HEADLESS:
+        return False
+    
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord("q"):
+        return True
+    elif key == ord(","):
+        config["cooldown"] = min(10.0, config.get("cooldown", 1.0) + 0.1)
+        dirty_config = True
+        print(f"⏫ Cooldown aumentato: {config['cooldown']:.2f}s")
+    elif key == ord("."):
+        config["cooldown"] = max(0.0, config.get("cooldown", 1.0) - 0.1)
+        dirty_config = True
+        print(f"⏬ Cooldown diminuito: {config['cooldown']:.2f}s")
+    elif key == ord("*"):
+        config["sleep"] = min(5.0, config.get("sleep", 0.2) + 0.05)
+        dirty_config = True
+        print(f"⏫ Sleep aumentato: {config['sleep']:.2f}s")
+    elif key == ord("/"):
+        config["sleep"] = max(0.0, config.get("sleep", 0.2) - 0.05)
+        dirty_config = True
+        print(f"⏬ Sleep diminuito: {config['sleep']:.2f}s")
+    elif key == ord("+") or key == ord("="):
+        config["threshold"] = min(1.0, config.get("threshold", 0.85) + 0.01)
+        dirty_config = True
+        print(f"🔼 Threshold aumentato: {config['threshold']:.2f}")
+    elif key == ord("-"):
+        config["threshold"] = max(0.0, config.get("threshold", 0.85) - 0.01)
+        dirty_config = True
+        print(f"🔽 Threshold diminuito: {config['threshold']:.2f}")
+    elif key == ord("m"):
+        available_methods = [
+            "TM_CCOEFF_NORMED",
+            "TM_CCORR_NORMED",
+            "TM_SQDIFF_NORMED"
+        ]
+        current = config.get("match_method", "TM_CCOEFF_NORMED")
+        idx = (available_methods.index(current) + 1) % len(available_methods)
+        config["match_method"] = available_methods[idx]
+        dirty_config = True
+        print(f"🔁 Metodo di matching cambiato: {config['match_method']}")
+    elif key == ord("i"):
+        config["preprocess_invert"] = not config.get("preprocess_invert", True)
+        dirty_config = True
+        print(f"🌓 Inversione {'attivata' if config['preprocess_invert'] else 'disattivata'}")
+    elif key == ord("b"):
+        config["preprocess_blur"] = not config.get("preprocess_blur", True)
+        dirty_config = True
+        print(f"🌫️ Blur {'attivato' if config['preprocess_blur'] else 'disattivato'}")
+    elif key == ord("e"):
+        config["preprocess_equalize"] = not config.get("preprocess_equalize", True)
+        dirty_config = True
+        print(f"📊 Equalizzazione {'attivata' if config['preprocess_equalize'] else 'disattivata'}")
+    elif key == ord("s"):
+        config["match_sector_enabled"] = not config.get("match_sector_enabled", False)
+        dirty_config = True
+        print(f"🧩 Sector Matching {'attivato' if config['match_sector_enabled'] else 'disattivato'}")
+    elif key == ord("u"):
+        config["match_use_mask"] = not config.get("match_use_mask", False)
+        dirty_config = True
+        print(f"🎭 Uso maschere {'attivato' if config['match_use_mask'] else 'disattivato'}")
+
+    if dirty_config:
+        save_config(config)
+
+    return False;
+
 
 def main():
 
@@ -494,7 +656,6 @@ def main():
         load_or_select_camera(args.reset_camera, args.reset_resolution)
     )
 
-    # Applica la risoluzione scelta se disponibile
     if "camera_resolution" in config:
         width, height = config["camera_resolution"]
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -508,7 +669,6 @@ def main():
     print("   Larghezza:", cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     print("   Altezza:  ", cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # --- Modalità SHOT ---
     if args.shot:
         take_shot(cap)
         return
@@ -517,18 +677,14 @@ def main():
     game_window = config.get("game_window_title")
 
     if game_window is None:
-        # Comportamento interattivo → richiesta all'utente
         choose_monitored_window()
-        return
 
     if game_window.lower() == "unused":
         should_check_focus = False
 
     if not config.get("game_window_title"):
         choose_monitored_window()
-        return
 
-    # --- Caricamento azioni ---
     actions = config.get("actions", {})
     if not actions:
         print("❌ Nessuna azione definita in config.json → 'actions'")
@@ -539,29 +695,20 @@ def main():
         entry = actions[key]
         print(f"  '{key}' → {entry['path'] if isinstance(entry, dict) else entry}")
 
-    # --- Precaricamento template ---
-    templates = {}
-    dimensions = {}
     action_data = {}
 
     for key, info in actions.items():
-        if isinstance(info, str):
-            path = info
-            requires = []
-            requires_not = []
-            roi = None
-        else:
-            path = info.get("path")
-            requires = info.get("requires", [])
-            requires_not = info.get("requires_not", [])
-            roi = info.get("roi")
-            if roi and (
-                not isinstance(roi, list)
-                or len(roi) != 4
-                or not all(isinstance(x, int) for x in roi)
-            ):
-                print(f"⚠️ ROI non valido per '{key}': {roi}")
-                continue
+        path = info.get("path") # template
+        requires = info.get("requires", []) # dipendenze
+        requires_not = info.get("requires_not", []) # esclusioni
+        roi = info.get("roi") # roi
+        if roi and (
+            not isinstance(roi, list)
+            or len(roi) != 4
+            or not all(isinstance(x, int) for x in roi)
+        ):
+            print(f"⚠️ ROI non valido per '{key}': {roi}")
+            info["roi"] = None
 
         if not os.path.exists(path):
             print(f"⚠️ Immagine mancante per '{key}': {path}")
@@ -571,17 +718,30 @@ def main():
             print(f"⚠️ Impossibile caricare '{path}'")
             continue
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        templates[key] = gray
-        dimensions[key] = gray.shape[::-1]
+
+        raw_mask = None
+        mask_path = info.get("mask")
+        if mask_path:
+            if os.path.exists(mask_path):
+                raw_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                if raw_mask.shape != gray.shape:
+                    print(f"⚠️ Maschera per '{key}' ha dimensioni diverse dal template!")
+                if raw_mask is None:
+                    print(f"⚠️ Impossibile caricare maschera '{mask_path}'")
+            else:
+                print(f"⚠️ Maschera non trovata per '{key}': {mask_path}")
+
         action_data[key] = {
             "requires": set(requires),
             "requires_not": set(requires_not),
             "roi": roi,
             "path": path,
-            "send": info.get("send", True),  # default = True
+            "send": info.get("send", True),
+            "template": gray,
+            "dimensions": gray.shape[::-1],
+            "mask_data": raw_mask,
         }
 
-    # --- Ciclo principale ---
     print("🔍 Bot attivo")
     if should_check_focus:
         print(f"🎯 Monitoraggio finestra: {game_window}")
@@ -596,6 +756,13 @@ def main():
         print(". --> diminuisce cooldown")
         print("* --> aumenta sleep frame")
         print("/ --> dimiuisce sleep frame")
+        print("m --> cambia algoritmo matching (attuale:", config["match_method"], ")")
+        print("i --> attiva/disattiva inversione")
+        print("b --> attiva/disattiva blur")
+        print("e --> attiva/disattiva equalizzazione")
+        print("s --> attiva/disattiva sector matching")
+        print("u --> attiva/disattiva uso maschere")
+
         resize_win("Webcam Bot", config["window_size"][0], config["window_size"][1])
 
     last_sent_time = {}
@@ -606,52 +773,19 @@ def main():
 
         process_frame(
             frame,
-            templates,
             action_data,
-            dimensions,
             last_sent_time,
             sock,
             should_check_focus,
         )
 
-        dirty_config = False
-        if not HEADLESS:
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
+        if handle_ocv_keys():
+            break
 
-            if key == ord(","):
-                config["cooldown"] = min(10.0, config.get("cooldown", 1.0) + 0.1)
-                dirty_config = True
-                print(f"⏫ Cooldown aumentato: {config['cooldown']:.2f}s")
-            elif key == ord("."):
-                config["cooldown"] = max(0.0, config.get("cooldown", 1.0) - 0.1)
-                dirty_config = True
-                print(f"⏬ Cooldown diminuito: {config['cooldown']:.2f}s")
-            elif key == ord("*"):
-                config["sleep"] = min(5.0, config.get("sleep", 0.2) + 0.05)
-                dirty_config = True
-                print(f"⏫ Sleep aumentato: {config['sleep']:.2f}s")
-            elif key == ord("/"):
-                config["sleep"] = max(0.0, config.get("sleep", 0.2) - 0.05)
-                dirty_config = True
-                print(f"⏬ Sleep diminuito: {config['sleep']:.2f}s")
-            elif key == ord("+") or key == ord("="):
-                config["threshold"] = min(1.0, config.get("threshold", 0.85) + 0.01)
-                dirty_config = True
-                print(f"🔼 Threshold aumentato: {config['threshold']:.2f}")
-            elif key == ord("-"):
-                config["threshold"] = max(0.0, config.get("threshold", 0.85) - 0.01)
-                dirty_config = True
-                print(f"🔽 Threshold diminuito: {config['threshold']:.2f}")
-
-        if dirty_config:
-            save_config(config)
         time.sleep(config["sleep"])
 
     cap.release()
     cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     main()
