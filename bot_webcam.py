@@ -1,4 +1,3 @@
-import sys
 import socket
 import time
 import os
@@ -16,6 +15,7 @@ try:
     from pygrabber.dshow_graph import FilterGraph
 except ImportError:
     FilterGraph = None
+
 import cv2
 
 CONFIG_PATH = "config.json"
@@ -26,7 +26,7 @@ DEFAULTS = {
     "threshold": 0.85,
     "ip": "192.168.172.89",
     "port": 12345,
-    "headless": None,
+    "headless": False,
     "game_window_title": None,
     "match_method": "TM_CCOEFF_NORMED",
     "preprocess_invert": True,
@@ -179,9 +179,10 @@ def list_open_windows():
 
 # --- Utility finestra ---
 def resize_win(name, width, height):
-    if not HEADLESS:
-        cv2.namedWindow(name, cv2.WINDOW_KEEPRATIO)
-        cv2.resizeWindow(name, width, height)
+    if HEADLESS:
+        return
+    cv2.namedWindow(name, cv2.WINDOW_KEEPRATIO)
+    cv2.resizeWindow(name, width, height)
 
 
 def save_config(data):
@@ -476,6 +477,7 @@ def process_frame(
 
     # Fase 3: Visualizzazione ed invio tasti
     for key, (max_val, max_loc) in confirmed_matches.items():
+        action = action_data.get(key, {})
         now = time.time()
         should_send = (
             not args.test
@@ -496,8 +498,8 @@ def process_frame(
             last_sent_time[key] = now
 
         # Mostra comunque la grafica anche se non invia
-        roi = data.get("roi")
-        w, h = data.get("dimensions")
+        roi = action.get("roi")
+        w, h = action.get("dimensions")
         top_left = (max_loc[0] + roi[0], max_loc[1] + roi[1]) if roi else max_loc
         bottom_right = (top_left[0] + w, top_left[1] + h)
         cv2.rectangle(frame, top_left, bottom_right, (0, 255, 0), 2)
@@ -506,25 +508,31 @@ def process_frame(
             frame, label, (top_left[0], top_left[1] - 10), DEF_FONT, 0.6, (0, 255, 0), 2
         )
 
-    if not HEADLESS:
-        label1 = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
-        label2 = f"Matching: {config.get('match_method', 'TM_CCOEFF_NORMED')}"
-        label3 = f"Invert:{'Y' if config['preprocess_invert'] else 'N'} | Blur:{'Y' if config['preprocess_blur'] else 'N'} | Eq:{'Y' if config['preprocess_equalize'] else 'N'} | Sector:{'Y' if config.get('match_sector_enabled') else 'N'} | Mask:{'Y' if config.get('match_use_mask') else 'N'}"
+    if HEADLESS:
+        return
+    
+    label1 = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
+    label2 = f"Matching: {config.get('match_method', 'TM_CCOEFF_NORMED')}"
+    label3 = f"Invert:{'Y' if config['preprocess_invert'] else 'N'} | Blur:{'Y' if config['preprocess_blur'] else 'N'} | Eq:{'Y' if config['preprocess_equalize'] else 'N'} | Sector:{'Y' if config.get('match_sector_enabled') else 'N'} | Mask:{'Y' if config.get('match_use_mask') else 'N'}"
 
 
-        cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
-        cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
-        cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 0, 0), 2)
-        cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 255, 255), 1)
-        cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 0, 0), 2)
-        cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 255, 255), 1)        
+    cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
+    cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
+    cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 0, 0), 2)
+    cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 255, 255), 1)
+    cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 0, 0), 2)
+    cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 255, 255), 1)        
 
-        show_processed_rois(frame, gray_frame, pre_matches, action_data)
+    show_processed_rois(frame, gray_frame, pre_matches, action_data)
 
-        cv2.imshow("Webcam Bot", frame)
+    cv2.imshow("Webcam Bot", frame)
 
 
 def take_shot(cap):
+    if HEADLESS:
+        print("🎥 Non è possibile acquisire uno screenshot in modalità HEADLESS")
+        return
+    
     print("🎥 Premi SPAZIO per scattare, ESC per uscire")
     while True:
         ret, frame = cap.read()
@@ -537,9 +545,9 @@ def take_shot(cap):
             cv2.imshow("Scatta immagine", frame)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == 27:
+        if key == 27: # ESC
             break
-        if key == 32:
+        if key == 32: # SPAZIO
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             os.makedirs("img", exist_ok=True)
             filename = f"img/screenshot-{timestamp}.png"
