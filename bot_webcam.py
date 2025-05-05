@@ -5,14 +5,17 @@ import argparse
 from datetime import datetime
 import json
 
-from pygrabber.dshow_graph import FilterGraph
-import cv2
-
 # Solo su Windows: per rilevare la finestra attiva
 try:
     import win32gui
 except ImportError:
     win32gui = None
+
+try:
+    from pygrabber.dshow_graph import FilterGraph
+except ImportError:
+    FilterGraph = None
+import cv2
 
 CONFIG_PATH = "config.json"
 DEFAULTS = {
@@ -173,30 +176,44 @@ def save_config(data):
 
 # --- Camera selection ---
 def load_or_select_camera(force_select=False, force_resolution=False):
-    filter_group = FilterGraph()
-    devices = filter_group.get_input_devices()
+    global FilterGraph
     available = []
+    selected_idx = None
+    selected_name = None
+    selected_caps = []
+
     print("🎥 Scansione webcam disponibili...")
 
-    # controlla che i dispositivi di input trovati siano utilizzabili
-    for idx, name in enumerate(devices):
+    if FilterGraph:
         try:
-            cap = filter_group.get_input_device_capabilities(idx)
-        except:
-            cap = []
-        capture = cv2.VideoCapture(idx)
-        if capture.read()[0]:
-            available.append((idx, name, cap))
-        capture.release()
+            filter_group = FilterGraph()
+            devices = filter_group.get_input_devices()
+
+            for idx, name in enumerate(devices):
+                try:
+                    caps = filter_group.get_input_device_capabilities(idx)
+                except Exception:
+                    caps = []
+                capture = cv2.VideoCapture(idx)
+                if capture.read()[0]:
+                    available.append((idx, name, caps))
+                capture.release()
+
+        except Exception as e:
+            print(f"⚠️ Errore durante l'uso di pygrabber: {e}")
+            print("🔁 Passo al fallback con OpenCV.")
+            FilterGraph = None  # forza fallback
+    if not FilterGraph:
+        # Fallback OpenCV
+        for idx in range(10):
+            capture = cv2.VideoCapture(idx)
+            if capture.read()[0]:
+                available.append((idx, f"Webcam {idx}", []))
+                capture.release()
 
     if not available:
         print("❌ Nessuna webcam funzionante trovata.")
         return
-
-    # Determina quale webcam usare
-    selected_idx = None
-    selected_name = None
-    selected_caps = []
 
     if not force_select and "camera_name" in config:
         for idx, name, caps in available:
@@ -271,20 +288,70 @@ def get_roi_for_key(key, action_data):
     return action_info.get("roi", None)
 
 
+def preprocess_image(img):
+    if len(img.shape) == 3 and img.shape[2] == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img
+    gray = cv2.bitwise_not(gray) #invertita
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0) # sfocata
+    equalized = cv2.equalizeHist(blurred) # equalizzata
+    return equalized
+
+
 # --- Template matching con ROI ---
 def match_with_roi(frame, template, threshold, roi=None):
+
     if roi is not None:
         region = extract_roi(frame, roi)
     else:
         region = frame
+
+    region = preprocess_image(region)
+    template = preprocess_image(template)
+
     try:
         result = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)
+        #result = cv2.matchTemplate(region, template, cv2.TM_CCORR_NORMED)
+
     except:
         return False, 0, None
+
     _, max_val, _, max_loc = cv2.minMaxLoc(result)
     if max_val >= threshold:
         return True, max_val, max_loc
     return False, max_val, None
+
+
+def show_processed_rois(frame, gray_frame, pre_matches, action_data):
+    thumb_size = 100  # dimensione anteprima
+    margin = 10
+    x_offset = margin
+    y_offset = frame.shape[0] - thumb_size - margin
+
+    for key in sorted(pre_matches):
+        roi = action_data[key].get("roi")
+        if roi:
+            region = extract_roi(gray_frame, roi)
+            processed = preprocess_image(region)
+            thumb = cv2.resize(processed, (thumb_size, thumb_size))
+            thumb_color = cv2.cvtColor(thumb, cv2.COLOR_GRAY2BGR)
+
+            # Calcola posizione e inserisce nel frame principale
+            x_end = x_offset + thumb_size
+            if x_end > frame.shape[1] - margin:
+                break  # finito lo spazio orizzontale
+            frame[y_offset : y_offset + thumb_size, x_offset:x_end] = thumb_color
+            cv2.putText(
+                frame,
+                key,
+                (x_offset, y_offset - 5),
+                DEF_FONT,
+                0.5,
+                (0, 255, 255),
+                1,
+            )
+            x_offset += thumb_size + margin
 
 
 # --- Ciclo principale ---
@@ -304,7 +371,7 @@ def process_frame(
 
         if roi:
             x, y, w, h = roi
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
             # per ora lascio commentato
             # cv2.putText(frame, key, (x, y - 5), DEF_FONT, 1, (255, 255, 0), 1)
 
@@ -326,26 +393,26 @@ def process_frame(
 
     # Fase 3: Visualizzazione ed invio tasti
     for key, (max_val, max_loc) in confirmed_matches.items():
-
         now = time.time()
-        if not args.test:
-            if (
-                key in last_sent_time
-                and (now - last_sent_time[key]) < config["cooldown"]
-            ):
-                continue
+        should_send = (
+            not args.test
+            and action_data[key].get("send", True)
+            and (
+                key not in last_sent_time
+                or (now - last_sent_time[key]) >= config["cooldown"]
+            )
+            and is_game_window_focused(should_check_focus)
+        )
 
-            if not action_data[key].get("send", True):
-                continue
+        if should_send:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            print(
+                f"[{timestamp}] ✅ Match '{key}' ({max_val:.2f}) → invio a {config['ip']}:{config['port']}"
+            )
+            sock.sendto(key.encode(), (config["ip"], config["port"]))
+            last_sent_time[key] = now
 
-            if is_game_window_focused(should_check_focus):
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                print(
-                    f"[{timestamp}] ✅ Match '{key}' ({max_val:.2f}) → invio a {config['ip']}:{config['port']}"
-                )
-                sock.sendto(key.encode(), (config["ip"], config["port"]))
-                last_sent_time[key] = now
-
+        # Mostra comunque la grafica anche se non invia
         roi = action_data[key].get("roi")
         w, h = dimensions[key]
         top_left = (max_loc[0] + roi[0], max_loc[1] + roi[1]) if roi else max_loc
@@ -360,6 +427,9 @@ def process_frame(
         label = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
         cv2.putText(frame, label, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
         cv2.putText(frame, label, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
+
+        show_processed_rois(frame, gray_frame, pre_matches, action_data)
+
         cv2.imshow("Webcam Bot", frame)
 
 
