@@ -656,7 +656,7 @@ def handle_ocv_keys():
     if dirty_config:
         save_config(config)
 
-    return False;
+    return False
 
 
 def main():
