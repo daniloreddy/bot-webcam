@@ -565,6 +565,8 @@ def take_shot(cap):
 def choose_monitored_window():
     if win32gui is None:
         print("⚠️ Funzionalità non disponibile su questo sistema.")
+        config["game_window_title"] = "unused"
+        save_config(config)
         return
     titles = list_open_windows()
     if not titles:
@@ -691,6 +693,7 @@ def main():
     if game_window is None:
         choose_monitored_window()
 
+    game_window = config.get("game_window_title")
     if game_window.lower() == "unused":
         should_check_focus = False
 
