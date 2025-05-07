@@ -4,6 +4,7 @@ import os
 import argparse
 from datetime import datetime
 import json
+import platform
 
 # Solo su Windows: per rilevare la finestra attiva
 try:
@@ -139,7 +140,10 @@ config["preprocess_equalize"] = config.get("preprocess_equalize", DEFAULTS["prep
 # HEADLESS: usa valore da config se presente, altrimenti autodetect
 HEADLESS = config.get("headless")
 if HEADLESS is None:
-    HEADLESS = not os.environ.get("DISPLAY") and os.name != "nt"
+    if platform.system() == "Darwin":  # macOS
+        HEADLESS = False
+    else:
+        HEADLESS = not os.environ.get("DISPLAY") and os.name != "nt"
     config["headless"] = HEADLESS
 else:
     HEADLESS = bool(HEADLESS)
