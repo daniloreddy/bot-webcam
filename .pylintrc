@@ -7,4 +7,5 @@ disable=
     bare-except,
     redefined-outer-name,
     line-too-long,
-    c-extension-no-member
+    c-extension-no-member,
+    broad-exception-caught
