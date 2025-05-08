@@ -31,7 +31,7 @@ def main():
         channels=1,
         callback=audio_callback,
     ):
-        print("In ascolto… pronuncia 'bot vai' o 'bot ferma'")
+        print("In ascolto… pronuncia 'jarvis vai' o 'jarvis fermo'")
         try:
             while True:
                 data = q.get()
@@ -43,7 +43,7 @@ def main():
                         if text == "jarvis vai":
                             activated = True
                             print("⚡ Bot AVVIATO")
-                        elif text == "jarvis ferma":
+                        elif text == "jarvis fermo":
                             activated = False
                             print("⏸️ Bot IN PAUSA")
                 # altrimenti potresti usare rec.PartialResult() per wake-word spotting più rapido
