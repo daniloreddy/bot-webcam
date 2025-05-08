@@ -25,7 +25,7 @@ DEFAULTS = {
     "sleep": 0.2,
     "cooldown": 1.0,
     "threshold": 0.85,
-    "ip": "192.168.172.89",
+    "ip": "192.168.178.89",
     "port": 12345,
     "headless": False,
     "game_window_title": None,
@@ -132,9 +132,13 @@ config["game_window_title"] = config.get(
     "game_window_title", DEFAULTS["game_window_title"]
 )
 config["match_method"] = config.get("match_method", DEFAULTS["match_method"])
-config["preprocess_invert"] = config.get("preprocess_invert", DEFAULTS["preprocess_invert"])
+config["preprocess_invert"] = config.get(
+    "preprocess_invert", DEFAULTS["preprocess_invert"]
+)
 config["preprocess_blur"] = config.get("preprocess_blur", DEFAULTS["preprocess_blur"])
-config["preprocess_equalize"] = config.get("preprocess_equalize", DEFAULTS["preprocess_equalize"])
+config["preprocess_equalize"] = config.get(
+    "preprocess_equalize", DEFAULTS["preprocess_equalize"]
+)
 
 
 # HEADLESS: usa valore da config se presente, altrimenti autodetect
@@ -326,6 +330,7 @@ def preprocess_image(img):
 
     return preprocessed
 
+
 # --- Template matching con ROI ---
 def match_with_roi(frame, data, threshold):
     template = data.get("template")
@@ -352,7 +357,9 @@ def match_with_roi(frame, data, threshold):
     )
 
     if config.get("match_sector_enabled", False):
-        return match_template_in_sectors(region, template, mask, threshold, use_mask, method)
+        return match_template_in_sectors(
+            region, template, mask, threshold, use_mask, method
+        )
     else:
         return match_template(region, template, mask, threshold, use_mask, method)
 
@@ -373,6 +380,7 @@ def match_template(region, template, mask, threshold, use_mask, method):
     except:
         return False, 0, None
 
+
 # --- Matching a settori ---
 def match_template_in_sectors(region, template, mask, threshold, use_mask, method):
     rows, cols = config.get("match_sector_grid", [2, 2])
@@ -390,12 +398,14 @@ def match_template_in_sectors(region, template, mask, threshold, use_mask, metho
         for j in range(cols):
             x = j * sector_w
             y = i * sector_h
-            sector_template = template[y:y+sector_h, x:x+sector_w]
-            sector_mask = mask[y:y+sector_h, x:x+sector_w] if use_mask else None
+            sector_template = template[y : y + sector_h, x : x + sector_w]
+            sector_mask = mask[y : y + sector_h, x : x + sector_w] if use_mask else None
 
             try:
                 if use_mask:
-                    result = cv2.matchTemplate(region, sector_template, method, mask=sector_mask)
+                    result = cv2.matchTemplate(
+                        region, sector_template, method, mask=sector_mask
+                    )
                 else:
                     result = cv2.matchTemplate(region, sector_template, method)
 
@@ -445,9 +455,7 @@ def show_processed_rois(frame, gray_frame, pre_matches, action_data):
 
 
 # --- Ciclo principale ---
-def process_frame(
-    frame, action_data, last_sent_time, sock, should_check_focus
-):
+def process_frame(frame, action_data, last_sent_time, sock, should_check_focus):
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     pre_matches = {}
     confirmed_matches = {}
@@ -455,7 +463,9 @@ def process_frame(
     # Fase 1: Rilevamento iniziale (senza dipendenze)
     for key, data in action_data.items():
         roi = data.get("roi")
-        matched, max_val, max_loc = match_with_roi(gray_frame, data, config["threshold"])
+        matched, max_val, max_loc = match_with_roi(
+            gray_frame, data, config["threshold"]
+        )
 
         if roi:
             x, y, w, h = roi
@@ -514,18 +524,17 @@ def process_frame(
 
     if HEADLESS:
         return
-    
+
     label1 = f"Threshold: {config['threshold']:.2f} | Cooldown: {config['cooldown']:.1f}s | Sleep: {config['sleep']:.2f}s"
     label2 = f"Matching: {config.get('match_method', 'TM_CCOEFF_NORMED')}"
     label3 = f"Invert:{'Y' if config['preprocess_invert'] else 'N'} | Blur:{'Y' if config['preprocess_blur'] else 'N'} | Eq:{'Y' if config['preprocess_equalize'] else 'N'} | Sector:{'Y' if config.get('match_sector_enabled') else 'N'} | Mask:{'Y' if config.get('match_use_mask') else 'N'}"
-
 
     cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
     cv2.putText(frame, label1, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
     cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 0, 0), 2)
     cv2.putText(frame, label2, (10, 65), DEF_FONT, 0.8, (0, 255, 255), 1)
     cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 0, 0), 2)
-    cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 255, 255), 1)        
+    cv2.putText(frame, label3, (10, 95), DEF_FONT, 0.8, (0, 255, 255), 1)
 
     show_processed_rois(frame, gray_frame, pre_matches, action_data)
 
@@ -536,7 +545,7 @@ def take_shot(cap):
     if HEADLESS:
         print("🎥 Non è possibile acquisire uno screenshot in modalità HEADLESS")
         return
-    
+
     print("🎥 Premi SPAZIO per scattare, ESC per uscire")
     while True:
         ret, frame = cap.read()
@@ -549,9 +558,9 @@ def take_shot(cap):
             cv2.imshow("Scatta immagine", frame)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == 27: # ESC
+        if key == 27:  # ESC
             break
-        if key == 32: # SPAZIO
+        if key == 32:  # SPAZIO
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             os.makedirs("img", exist_ok=True)
             filename = f"img/screenshot-{timestamp}.png"
@@ -590,12 +599,13 @@ def choose_monitored_window():
             print("❌ Scelta non valida. Riprova.")
     return
 
+
 def handle_ocv_keys():
     dirty_config = False
 
     if HEADLESS:
         return False
-    
+
     key = cv2.waitKey(1) & 0xFF
     if key == ord("q"):
         return True
@@ -624,11 +634,7 @@ def handle_ocv_keys():
         dirty_config = True
         print(f"🔽 Threshold diminuito: {config['threshold']:.2f}")
     elif key == ord("m"):
-        available_methods = [
-            "TM_CCOEFF_NORMED",
-            "TM_CCORR_NORMED",
-            "TM_SQDIFF_NORMED"
-        ]
+        available_methods = ["TM_CCOEFF_NORMED", "TM_CCORR_NORMED", "TM_SQDIFF_NORMED"]
         current = config.get("match_method", "TM_CCOEFF_NORMED")
         idx = (available_methods.index(current) + 1) % len(available_methods)
         config["match_method"] = available_methods[idx]
@@ -637,7 +643,9 @@ def handle_ocv_keys():
     elif key == ord("i"):
         config["preprocess_invert"] = not config.get("preprocess_invert", True)
         dirty_config = True
-        print(f"🌓 Inversione {'attivata' if config['preprocess_invert'] else 'disattivata'}")
+        print(
+            f"🌓 Inversione {'attivata' if config['preprocess_invert'] else 'disattivata'}"
+        )
     elif key == ord("b"):
         config["preprocess_blur"] = not config.get("preprocess_blur", True)
         dirty_config = True
@@ -645,15 +653,21 @@ def handle_ocv_keys():
     elif key == ord("e"):
         config["preprocess_equalize"] = not config.get("preprocess_equalize", True)
         dirty_config = True
-        print(f"📊 Equalizzazione {'attivata' if config['preprocess_equalize'] else 'disattivata'}")
+        print(
+            f"📊 Equalizzazione {'attivata' if config['preprocess_equalize'] else 'disattivata'}"
+        )
     elif key == ord("s"):
         config["match_sector_enabled"] = not config.get("match_sector_enabled", False)
         dirty_config = True
-        print(f"🧩 Sector Matching {'attivato' if config['match_sector_enabled'] else 'disattivato'}")
+        print(
+            f"🧩 Sector Matching {'attivato' if config['match_sector_enabled'] else 'disattivato'}"
+        )
     elif key == ord("u"):
         config["match_use_mask"] = not config.get("match_use_mask", False)
         dirty_config = True
-        print(f"🎭 Uso maschere {'attivato' if config['match_use_mask'] else 'disattivato'}")
+        print(
+            f"🎭 Uso maschere {'attivato' if config['match_use_mask'] else 'disattivato'}"
+        )
 
     if dirty_config:
         save_config(config)
@@ -713,10 +727,10 @@ def main():
     action_data = {}
 
     for key, info in actions.items():
-        path = info.get("path") # template
-        requires = info.get("requires", []) # dipendenze
-        requires_not = info.get("requires_not", []) # esclusioni
-        roi = info.get("roi") # roi
+        path = info.get("path")  # template
+        requires = info.get("requires", [])  # dipendenze
+        requires_not = info.get("requires_not", [])  # esclusioni
+        roi = info.get("roi")  # roi
         if roi and (
             not isinstance(roi, list)
             or len(roi) != 4
@@ -801,6 +815,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
