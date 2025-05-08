@@ -167,11 +167,11 @@ DEACTIVATE_COMMAND = "jarvis fermo"
 activated = False  # indica se il bot deve processare i frame
 
 # --- Setup Vosk Offline ASR ---
-model_path = (
+MODEL_PATH = (
     "model/vosk-model-small-it-0.22"  # Assicurati di aver scompattato il modello qui
 )
-print(f"Caricando modello Vosk da '{model_path}'...")
-model = Model(model_path)
+print(f"Carico modello Vosk da '{MODEL_PATH}'...")
+model = Model(MODEL_PATH)
 rec = KaldiRecognizer(model, 16000)
 audio_queue = queue.Queue()
 
@@ -192,7 +192,7 @@ def voice_control():
         channels=1,
         callback=audio_callback,
     ):
-        print("Voice control attivo: pronuncia 'bot vai' o 'bot ferma'")
+        print(f"Voice control attivo: pronuncia '{ACTIVATE_COMMAND}' o '{DEACTIVATE_COMMAND}")
         while True:
             data = audio_queue.get()
             if rec.AcceptWaveform(data):
@@ -512,6 +512,9 @@ def show_processed_rois(frame, gray_frame, pre_matches, action_data):
 
 # processa il frame acquisito dalla cam
 def process_frame(frame, actions, last_sent_time, sock, should_check_focus):
+
+    global activated
+
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     pre_matches = {}  # template trovati
     confirmed_matches = {}  # templati risconosciuti dopo validazione dipendenze
@@ -561,6 +564,7 @@ def process_frame(frame, actions, last_sent_time, sock, should_check_focus):
             and is_game_window_focused(
                 should_check_focus
             )  # deve essere selezionata la finestra del gioco
+            and activated
         )
 
         if should_send:
@@ -742,10 +746,9 @@ def handle_ocv_keys():
 
 def main():
 
-    global activated
-
     # Avvia il thread di riconoscimento vocale
-    threading.Thread(target=voice_control, daemon=True).start()
+    if not args.test:
+        threading.Thread(target=voice_control, daemon=True).start()
 
     # Configurazione UDP per invio sequenze alla tastiera
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -884,14 +887,13 @@ def main():
         if not ret:
             continue
 
-        if activated:
-            process_frame(
-                frame,
-                actions_data,
-                last_sent_time,
-                sock,
-                should_check_focus,
-            )
+        process_frame(
+            frame,
+            actions_data,
+            last_sent_time,
+            sock,
+            should_check_focus,
+        )
 
         if handle_ocv_keys():
             break
