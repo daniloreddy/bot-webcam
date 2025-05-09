@@ -192,11 +192,6 @@ def main():
 
     conf_utils.init_config()
 
-    # Avvia il thread di riconoscimento vocale
-    listener_thread = None
-    if not conf_utils.args.test:
-        listener_thread = audio_utils.start_listening()
-
     # Configurazione UDP per invio sequenze alla tastiera
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -231,6 +226,11 @@ def main():
         # carica le azioni e valida e manipola le immagini da utilizzare
         actions_data = cv_utils.load_actions(actions)
 
+        # Avvia il thread di riconoscimento vocale
+        listener_thread = None
+        if not conf_utils.args.test:
+            listener_thread = audio_utils.start_listening()
+            
         print("🔍 Bot attivo")
         if should_check_focus:
             print(f"🎯 Monitoraggio finestra: {game_window}")
