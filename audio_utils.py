@@ -5,10 +5,10 @@ import json
 from vosk import Model, KaldiRecognizer
 import sounddevice as sd
 
-from conf_utils import CONFIG
+ACTIVATE_COMMAND = "attiva"
+DEACTIVATE_COMMAND = "disattiva"
+EXIT_COMMAND = "chiudi"
 
-ACTIVATE_COMMAND = "jarvis vai"
-DEACTIVATE_COMMAND = "jarvis fermo"
 MODEL_PATH = "model/vosk-model-small-it-0.22"
 
 audio_queue = queue.Queue()
@@ -16,6 +16,7 @@ audio_queue = queue.Queue()
 # gli event globali
 active_event = threading.Event()
 stop_event = threading.Event()
+exit_event = threading.Event()
 
 
 def audio_callback(indata, frames, time_, status):
@@ -55,12 +56,19 @@ def voice_control():
                         continue
 
                     print(f"[VOICE] Riconosciuto: '{text}'")
-                    if text == ACTIVATE_COMMAND:
+                    split = text.split()
+                    if ACTIVATE_COMMAND in split:
+                        exit_event.clear()
                         active_event.set()
-                        print("⚡ Bot AVVIATO")
-                    elif text == DEACTIVATE_COMMAND:
+                        print("⚡ Bot ATTIVO")
+                    elif DEACTIVATE_COMMAND in split:
+                        exit_event.clear()
                         active_event.clear()
-                        print("⏸️ Bot IN PAUSA")
+                        print("⏸️ Bot DISATTIVO")
+                    elif EXIT_COMMAND in split:
+                        active_event.clear()
+                        exit_event.set()
+                        print("⏸️ Richiesta uscita BOT")
             except Exception as e:
                 print(f"Errore loop voice control '{e}'")
                 break

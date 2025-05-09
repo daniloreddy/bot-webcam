@@ -55,7 +55,7 @@ def load_or_select_camera(force_select=False, force_resolution=False):
     selected_idx = None
     selected_name = None
     selected_caps = []
-    use_filter_graph = True
+    use_filter_graph = False
 
     print("🎥 Scansione webcam disponibili...")
 
@@ -71,6 +71,7 @@ def load_or_select_camera(force_select=False, force_resolution=False):
                     caps = []
                 if cv_utils.try_cam(idx):
                     available.append((idx, name, caps))
+                use_filter_graph = True
         except Exception as e:
             print(f"⚠️ Errore durante l'uso di pygrabber: {e}")
             print("🔁 Passo al fallback con OpenCV.")
@@ -197,10 +198,14 @@ def main():
     # Configurazione UDP per invio sequenze alla tastiera
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    # recupera impostazioni cam
-    camera_idx = load_or_select_camera(conf_utils.args.reset_camera, conf_utils.args.reset_resolution)
-
     try:
+
+        # recupera impostazioni cam
+        camera_idx = load_or_select_camera(conf_utils.args.reset_camera, conf_utils.args.reset_resolution)
+
+        if camera_idx is None:
+            return
+        
         # gestisce richiesta acquisizione fotogramma cam
         if conf_utils.args.shot:
             conf_utils.save_config()

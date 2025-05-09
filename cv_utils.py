@@ -456,63 +456,63 @@ def handle_ocv_keys():
 
     key = get_cv_key()
     if key == ord("q"):
-        return True, None
+        return True, True
     elif key == ord(","):  # aumenta cooldown invio tasti
         CONFIG["cooldown"] = min(10.0, CONFIG.get("cooldown", 1.0) + 0.1)
-        dirty_config = False
+        dirty_config = True
         print(f"⏫ Cooldown aumentato: {CONFIG['cooldown']:.2f}s")
     elif key == ord("."):  # riduce  cooldown invio tasti
         CONFIG["cooldown"] = max(0.0, CONFIG.get("cooldown", 1.0) - 0.1)
-        dirty_config = False
+        dirty_config = True
         print(f"⏬ Cooldown diminuito: {CONFIG['cooldown']:.2f}s")
     elif key == ord("*"):  # aumenta sleep tra un frame processato e l'altro
         CONFIG["sleep"] = min(5.0, CONFIG.get("sleep", 0.2) + 0.05)
-        dirty_config = False
+        dirty_config = True
         print(f"⏫ Sleep aumentato: {CONFIG['sleep']:.2f}s")
     elif key == ord("/"):  # riduce sleep tra un frame processato e l'altro
         CONFIG["sleep"] = max(0.0, CONFIG.get("sleep", 0.2) - 0.05)
-        dirty_config = False
+        dirty_config = True
         print(f"⏬ Sleep diminuito: {CONFIG['sleep']:.2f}s")
     elif key == ord("+") or key == ord("="):  # aumenta la soglia di riconoscimento
         CONFIG["threshold"] = min(1.0, CONFIG.get("threshold", 0.85) + 0.01)
-        dirty_config = False
+        dirty_config = True
         print(f"🔼 Threshold aumentato: {CONFIG['threshold']:.2f}")
     elif key == ord("-"):  # riduce la soglia di riconoscimento
         CONFIG["threshold"] = max(0.0, CONFIG.get("threshold", 0.85) - 0.01)
-        dirty_config = False
+        dirty_config = True
         print(f"🔽 Threshold diminuito: {CONFIG['threshold']:.2f}")
     elif key == ord("m"):  # cambia il metodo di match del template
         available_methods = ["TM_CCOEFF_NORMED", "TM_CCORR_NORMED", "TM_SQDIFF_NORMED"]
         current = CONFIG.get("match_method", "TM_CCOEFF_NORMED")
         idx = (available_methods.index(current) + 1) % len(available_methods)
         CONFIG["match_method"] = available_methods[idx]
-        dirty_config = False
+        dirty_config = True
         print(f"🔁 Metodo di matching cambiato: {CONFIG['match_method']}")
     elif key == ord("i"):  # inverte i colori dell'immagine
         CONFIG["preprocess_invert"] = not CONFIG.get("preprocess_invert", True)
-        dirty_config = False
+        dirty_config = True
         print(
             f"🌓 Inversione {'attivata' if CONFIG['preprocess_invert'] else 'disattivata'}"
         )
     elif key == ord("b"):  # applica blur all'immagine
         CONFIG["preprocess_blur"] = not CONFIG.get("preprocess_blur", True)
-        dirty_config = False
+        dirty_config = True
         print(f"🌫️ Blur {'attivato' if CONFIG['preprocess_blur'] else 'disattivato'}")
     elif key == ord("e"):  # equalizza immagine
         CONFIG["preprocess_equalize"] = not CONFIG.get("preprocess_equalize", True)
-        dirty_config = False
+        dirty_config = True
         print(
             f"📊 Equalizzazione {'attivata' if CONFIG['preprocess_equalize'] else 'disattivata'}"
         )
     elif key == ord("s"):  # attiva matching in settori
         CONFIG["match_sector_enabled"] = not CONFIG.get("match_sector_enabled", False)
-        dirty_config = False
+        dirty_config = True
         print(
             f"🧩 Sector Matching {'attivato' if CONFIG['match_sector_enabled'] else 'disattivato'}"
         )
     elif key == ord("u"):  # attiva l'uso delle maschere
         CONFIG["match_use_mask"] = not CONFIG.get("match_use_mask", False)
-        dirty_config = False
+        dirty_config = True
         print(
             f"🎭 Uso maschere {'attivato' if CONFIG['match_use_mask'] else 'disattivato'}"
         )
@@ -567,11 +567,12 @@ def frame_loop(
             )
 
             exit_loop, dirty_config = handle_ocv_keys()
-            if exit_loop:
-                break
 
             if dirty_config:
                 overlay = update_overlay(frame.shape[:2], actions_data)
+
+            if exit_loop or audio_utils.exit_event.is_set():
+                break
 
             sleep = CONFIG.get("sleep")
             if sleep and sleep > 0:
