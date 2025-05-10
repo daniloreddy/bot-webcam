@@ -3,14 +3,14 @@ Module tui_utils.py
 
 Provides a cross-platform text-based user interface for headless mode using Rich.
 Displays real-time configuration parameters in a live-updating table,
-and a scrolling panel of recent log messages without requiring an OpenCV window.
+real-time detection scores side-by-side, and a scrolling panel of recent log messages.
 Compatible with Windows, macOS, and Linux.
 """
 
 import threading
 import time
 from collections import deque
-from typing import Optional, Deque, Any
+from typing import Optional, Deque, Any, Dict
 import builtins
 
 from rich.console import Console
@@ -25,6 +25,8 @@ from conf_utils import CONFIG
 _tui_stop_event: threading.Event = threading.Event()
 # Buffer to hold recent log messages (max 10 entries)
 _log_buffer: Deque[str] = deque(maxlen=10)
+# Buffer to hold latest detection scores per action
+_detect_buffer: Dict[str, float] = {}
 
 # Preserve the original print function
 _original_print = builtins.print
@@ -40,14 +42,25 @@ def tui_log(message: str) -> None:
     _log_buffer.append(message)
 
 
-def _build_table() -> Table:
+def tui_detect(action: str, score: float) -> None:
     """
-    Construct a Rich Table reflecting current CONFIG values and their shortcut commands.
+    Store the latest detection score for an action.
+
+    Parameters:
+        action (str): The action key.
+        score (float): The matching score.
+    """
+    _detect_buffer[action] = score
+
+
+def _build_config_table() -> Table:
+    """
+    Construct a Rich Table reflecting current CONFIG values and their commands.
 
     Returns:
         Table: A Rich Table with configuration parameters, commands, and current values.
     """
-    table = Table(title="Webcam Bot TUI (headless mode)")
+    table = Table(title="Configuration")
     table.add_column("Parameter", style="cyan", no_wrap=True)
     table.add_column("Commands", style="yellow", no_wrap=True)
     table.add_column("Value", style="magenta")
@@ -69,17 +82,36 @@ def _build_table() -> Table:
     return table
 
 
+def _build_detect_table() -> Table:
+    """
+    Construct a Rich Table displaying the latest detection scores per action.
+
+    Returns:
+        Table: A Rich Table with action keys and their current scores.
+    """
+    table = Table(title="Detection Scores")
+    table.add_column("Action", style="green", no_wrap=True)
+    table.add_column("Score", style="magenta", justify="right")
+    for key, score in _detect_buffer.items():
+        table.add_row(key, f"{score:.2f}")
+    return table
+
+
 def _build_layout() -> Layout:
     """
-    Create a two-pane layout: configuration table above, log panel below.
-    Table pane auto-sizes to content; log pane fills remaining space.
+    Create a layout: top row with two tables side-by-side (config, detection),
+    bottom logs panel filling remaining space.
 
     Returns:
         Layout: A Rich Layout object ready for rendering.
     """
+    # Main layout split vertical: upper (tables) and logs below
     layout = Layout()
-    layout.split_column(Layout(name="table"), Layout(name="logs", ratio=1))
-    layout["table"].update(_build_table())
+    layout.split_column(Layout(name="upper", ratio=3), Layout(name="logs", ratio=1))
+    # Upper split into config and detection side-by-side
+    layout["upper"].split_row(Layout(name="config"), Layout(name="detect"))
+    layout["config"].update(_build_config_table())
+    layout["detect"].update(_build_detect_table())
 
     log_panel = Panel(
         "\n".join(_log_buffer) or "<no logs>", title="Recent Logs", expand=True
@@ -91,9 +123,7 @@ def _build_layout() -> Layout:
 def _tui_loop() -> None:
     """
     Internal loop that uses Rich Live to render and update
-    the configuration table and the log panel periodically.
-
-    Catches and logs exceptions to avoid crashing the TUI.
+    the layout periodically. Catches exceptions to avoid crashes.
     """
     console = Console()
     with Live(console=console, refresh_per_second=4) as live:
@@ -109,7 +139,6 @@ def _tui_loop() -> None:
 def start_tui() -> threading.Thread:
     """
     Start the Rich-based TUI in a background thread.
-
     Overrides built-in print to redirect messages into the TUI log.
 
     Returns:
@@ -130,15 +159,12 @@ def start_tui() -> threading.Thread:
 def stop_tui(thread: Optional[threading.Thread]) -> None:
     """
     Signal the TUI thread to stop and wait for it to finish.
-
     Restores the original print function.
 
     Parameters:
         thread (Optional[threading.Thread]): The TUI thread to stop.
     """
-    # Restore original print
     builtins.print = _original_print
-    # Signal stop and join thread
     if thread and thread.is_alive():
         _tui_stop_event.set()
         thread.join()

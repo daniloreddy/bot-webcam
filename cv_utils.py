@@ -9,6 +9,7 @@ import numpy as np
 
 from conf_utils import CONFIG
 import audio_utils
+import tui_utils
 
 # --- Voice Control Flags ---
 DEF_FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -383,6 +384,7 @@ def process_frame(
     # Phase 1: initial detection
     for key, action_data in actions.items():
         matched, score, loc = match_with_roi(gray_frame, action_data)
+        tui_utils.tui_detect(key, score)
         if matched:
             pre_matches[key] = (score, loc)  # type: ignore
 
