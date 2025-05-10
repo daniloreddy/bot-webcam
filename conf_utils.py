@@ -1,12 +1,28 @@
+"""
+Module conf_utils.py
+
+Handles loading, parsing, and saving the application configuration for the
+webcam bot. Provides functions to initialize configuration from defaults,
+command-line arguments, and an existing JSON file, and to persist changes.
+"""
+
 import argparse
 import os
 import json
 import platform
+from typing import Any, Dict, Optional
 
-args = None
-CONFIG = {}
-CONFIG_PATH = "config.json"
-DEFAULTS = {
+# Parsed command-line arguments
+args: Optional[argparse.Namespace] = None
+
+# Global configuration dictionary used by the application
+CONFIG: Dict[str, Any] = {}
+
+# Path to the JSON file where configuration is saved/loaded
+CONFIG_PATH: str = "config.json"
+
+# Default values for configuration keys
+DEFAULTS: Dict[str, Any] = {
     "window_size": [1280, 720],
     "sleep": 0.2,
     "cooldown": 1.0,
@@ -23,15 +39,35 @@ DEFAULTS = {
     "match_sector_grid": [2, 2],
     "match_sector_min_success": 3,
     "match_use_mask": False,
+    # Audio control defaults
+    "audio_model_path": "model/vosk-model-small-it-0.22",
+    "audio_activate_cmd": "attiva",
+    "audio_deactivate_cmd": "disattiva",
+    "audio_exit_cmd": "chiudi",
 }
 
 
-def init_config():
+def init_config() -> None:
+    """
+    Initialize the global CONFIG dictionary.
 
+    Merges values from DEFAULTS, an existing config.json file, and
+    command-line arguments. Handles reset of the configuration, sets
+    platform-specific defaults (e.g. headless mode), and persists
+    the result back to config.json.
+
+    Side effects:
+        - Parses sys.argv via argparse
+        - Reads and writes CONFIG_PATH
+        - Updates the module-level CONFIG dict
+        - Updates the module-level args
+
+    Returns:
+        None
+    """
     global args
 
-    print("Controllo parametri riga di comando...")
-    # --- Argomenti da linea di comando ---
+    # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description="Webcam bot per riconoscimento immagini"
     )
@@ -69,45 +105,46 @@ def init_config():
         "--cooldown",
         "-c",
         type=float,
-        default=1.0,
+        default=DEFAULTS["cooldown"],
         help="Secondi di pausa tra due invii dello stesso tasto",
     )
     parser.add_argument(
         "--threshold",
         "-T",
         type=float,
-        default=0.85,
+        default=DEFAULTS["threshold"],
         help="Soglia di matching tra 0.0 e 1.0",
     )
     parser.add_argument(
         "--ip",
         "-i",
         type=str,
-        default="192.168.172.89",
+        default=DEFAULTS["ip"],
         help="Indirizzo IP del dispositivo di destinazione",
     )
     parser.add_argument(
         "--port",
         "-p",
         type=int,
-        default=12345,
+        default=DEFAULTS["port"],
         help="Porta UDP del dispositivo di destinazione",
     )
+
     args = parser.parse_args()
 
-    # --- Gestione reset configurazione ---
+    # Reset configuration if requested
     if args.reset_config and os.path.exists(CONFIG_PATH):
         os.remove(CONFIG_PATH)
         print("🔁 Configurazione azzerata.")
 
-    # --- Carica o aggiorna config iniziale ---
+    # Load existing config.json if present
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            conf = json.load(f)
-            CONFIG.clear()
-            CONFIG.update(conf)
+            loaded = json.load(f)
+        CONFIG.clear()
+        CONFIG.update(loaded)
 
-    print("Inizializza configurazione...")
+    # Merge defaults, saved config, and CLI overrides
     CONFIG["cooldown"] = (
         args.cooldown
         if args.cooldown != parser.get_default("cooldown")
@@ -128,36 +165,47 @@ def init_config():
         if args.port != parser.get_default("port")
         else CONFIG.get("port", DEFAULTS["port"])
     )
-    CONFIG["sleep"] = CONFIG.get("sleep", DEFAULTS["sleep"])
-    CONFIG["window_size"] = CONFIG.get("window_size", DEFAULTS["window_size"])
-    CONFIG["game_window_title"] = CONFIG.get(
-        "game_window_title", DEFAULTS["game_window_title"]
-    )
-    CONFIG["match_method"] = CONFIG.get("match_method", DEFAULTS["match_method"])
-    CONFIG["preprocess_invert"] = CONFIG.get(
-        "preprocess_invert", DEFAULTS["preprocess_invert"]
-    )
-    CONFIG["preprocess_blur"] = CONFIG.get(
-        "preprocess_blur", DEFAULTS["preprocess_blur"]
-    )
-    CONFIG["preprocess_equalize"] = CONFIG.get(
-        "preprocess_equalize", DEFAULTS["preprocess_equalize"]
-    )
 
-    # HEADLESS: usa valore da config se presente, altrimenti autodetect
-    headless = CONFIG.get("headless")
-    if headless is None:
-        if platform.system() == "Darwin":  # macOS
-            headless = False
+    # Fill remaining keys from config or defaults
+    for key in [
+        "sleep",
+        "window_size",
+        "game_window_title",
+        "match_method",
+        "preprocess_invert",
+        "preprocess_blur",
+        "preprocess_equalize",
+        "audio_activate_cmd",
+        "audio_deactivate_cmd",
+        "audio_exit_cmd",
+        "audio_model_path",
+    ]:
+        CONFIG[key] = CONFIG.get(key, DEFAULTS[key])
+
+    # Determine headless mode if not specified
+    headless_val = CONFIG.get("headless")
+    if headless_val is None:
+        # On macOS use GUI, otherwise check DISPLAY env var
+        if platform.system() == "Darwin":
+            headless_val = False
         else:
-            headless = not os.environ.get("DISPLAY") and os.name != "nt"
-        CONFIG["headless"] = headless
+            headless_val = not os.environ.get("DISPLAY") and os.name != "nt"
+        CONFIG["headless"] = headless_val
     else:
-        headless = bool(headless)
+        CONFIG["headless"] = bool(headless_val)
 
+    # Persist configuration
     save_config()
 
 
-def save_config():
+def save_config() -> None:
+    """
+    Write the current CONFIG dictionary to CONFIG_PATH in JSON format.
+
+    Overwrites any existing file. Creates human-readable indent.
+
+    Returns:
+        None
+    """
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(CONFIG, f, indent=2)

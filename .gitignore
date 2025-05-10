@@ -1,5 +1,5 @@
-venv/*
-model/*/
+venv/**
+model/**/
 __pycache__/
-img/*/*.png
+img/**/*.png
 config.json*

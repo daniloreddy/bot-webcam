@@ -1,273 +1,292 @@
-import socket
+"""
+Module bot_webcam_entry.py
 
-# Solo su Windows
-# per rilevare la finestra attiva
+Entry point for the webcam bot application. Handles:
+- configuration initialization
+- camera selection (including listing and resolution choose)
+- game window focus selection
+- loading and validating user-defined actions
+- starting voice-control listener thread
+- running the main frame loop
+- graceful shutdown and config persistence
+"""
+
+import socket
+from typing import Any, List, Optional, Tuple
+
+# Windows only APIs
 try:
     import win32gui
 except ImportError:
     win32gui = None
-# pre recuperare i nomi delle webcam
+
+# Optional DirectShow for camera enumeration on Windows
 try:
     from pygrabber.dshow_graph import FilterGraph
 except ImportError:
     FilterGraph = None
-# ---
 
 import cv_utils
 import audio_utils
 import conf_utils
 from conf_utils import CONFIG
+import tui_utils
 
 
-def is_game_window_focused(should_check_focus):
-    if not should_check_focus:
-        return True
-    current = get_foreground_window_title()
-    return current and current.lower() == CONFIG.get("game_window_title").lower()
+def get_foreground_window_title() -> Optional[str]:
+    """
+    Retrieve the title of the currently focused window (Windows only).
 
-
-# --- Selezione finestra gioco ---
-def get_foreground_window_title():
+    Returns:
+        Optional[str]: The window title if available, None otherwise.
+    """
     if win32gui is None:
         return None
     hwnd = win32gui.GetForegroundWindow()
     return win32gui.GetWindowText(hwnd)
 
 
-def list_open_windows():
-    titles = []
+def is_game_window_focused(should_check: bool) -> bool:
+    """
+    Determine whether the configured game window is in focus.
+
+    Parameters:
+        should_check (bool): If False, always return True (no focus check).
+
+    Returns:
+        bool: True if focus check disabled or if the foreground window title
+              matches the configured 'game_window_title' (case-insensitive).
+    """
+    if not should_check:
+        return True
+    title = get_foreground_window_title()
+    target = CONFIG.get("game_window_title") or ""
+    return bool(title and title.lower() == target.lower())
+
+
+def list_open_windows() -> List[str]:
+    """
+    List visible window titles on Windows (requires win32gui).
+
+    Returns:
+        List[str]: Titles of visible windows, empty list on non-Windows or error.
+    """
+    titles: List[str] = []
     if win32gui is None:
         return titles
 
-    def enum_handler(hwnd, _):
+    def _enum_handler(hwnd: int, _arg: Any) -> None:
         if win32gui.IsWindowVisible(hwnd):
             title = win32gui.GetWindowText(hwnd)
             if title:
                 titles.append(title)
 
-    win32gui.EnumWindows(enum_handler, None)
+    win32gui.EnumWindows(_enum_handler, None)
     return titles
 
 
-# --- Camera selection ---
-def load_or_select_camera(force_select=False, force_resolution=False):
-    available = []
-    selected_idx = None
-    selected_name = None
-    selected_caps = []
-    use_filter_graph = False
+def load_or_select_camera(
+    force_select: bool = False, force_resolution: bool = False
+) -> Optional[int]:
+    """
+    Discover available cameras and prompt user to select one.
 
-    print("🎥 Scansione webcam disponibili...")
+    Parameters:
+        force_select (bool): If True, ignore saved camera and prompt selection.
+        force_resolution (bool): If True, always prompt resolution selection.
 
+    Returns:
+        Optional[int]: Selected camera index, or None if none available.
+    """
+    available: List[Tuple[int, str, Any]] = []
+    selected_idx: Optional[int] = None
+    selected_name: Optional[str] = None
+    selected_caps: Any = []
+
+    print("🎥 Scanning for available webcams...")
+
+    # Attempt DirectShow on Windows
+    use_dshow = False
     if FilterGraph:
         try:
-            filter_group = FilterGraph()
-            devices = filter_group.get_input_devices()
-
+            fg = FilterGraph()
+            devices = fg.get_input_devices()
             for idx, name in enumerate(devices):
                 try:
-                    caps = filter_group.get_input_device_capabilities(idx)
+                    caps = fg.get_input_device_capabilities(idx)
                 except Exception:
                     caps = []
                 if cv_utils.try_cam(idx):
                     available.append((idx, name, caps))
-                use_filter_graph = True
+            use_dshow = True
         except Exception as e:
-            print(f"⚠️ Errore durante l'uso di pygrabber: {e}")
-            print("🔁 Passo al fallback con OpenCV.")
-            use_filter_graph = False  # forza fallback
+            print(f"⚠️ DirectShow error: {e}, falling back to OpenCV")
 
-    if not use_filter_graph:
-        # Fallback OpenCV
+    # Fallback: OpenCV enumeration
+    if not use_dshow:
         for idx in range(10):
             if cv_utils.try_cam(idx):
                 available.append((idx, f"Webcam {idx}", []))
 
     if not available:
-        print("❌ Nessuna webcam funzionante trovata.")
-        return
+        print("❌ No working webcams found.")
+        return None
 
-    if not force_select and "camera_name" in CONFIG:
+    # Try saved camera
+    if not force_select and CONFIG.get("camera_name"):
         for idx, name, caps in available:
             if name == CONFIG.get("camera_name"):
-                print(f"✅ Webcam trovata per nome: '{name}' (index {idx})")
                 selected_idx, selected_name, selected_caps = idx, name, caps
+                print(f"✅ Loaded saved webcam: '{name}' (index {idx})")
                 break
 
+    # Prompt selection if needed
     if selected_idx is None:
-        print("📷 Webcam disponibili:")
+        print("📷 Available webcams:")
         for i, (idx, name, _) in enumerate(available):
-            print(f"{i}: {name}")
+            print(f"  {i}: {name}")
         while True:
-            choice = input("👉 Seleziona la webcam da usare: ").strip()
+            choice = input("👉 Select webcam index: ").strip()
             if not choice.isdigit():
-                print("❌ Inserisci solo un numero valido.")
+                print("❌ Enter a valid number.")
                 continue
-            dev = int(choice)
-            if 0 <= dev < len(available):
-                selected_idx, selected_name, selected_caps = available[dev]
+            sel = int(choice)
+            if 0 <= sel < len(available):
+                selected_idx, selected_name, selected_caps = available[sel]
                 CONFIG["camera_index"] = selected_idx
                 CONFIG["camera_name"] = selected_name
                 conf_utils.save_config()
-                print(
-                    f"💾 Webcam selezionata salvata: '{selected_name}' (index {selected_idx})"
-                )
                 break
-            else:
-                print(f"❌ Inserisci un numero compreso tra 0 e {len(available) - 1}.")
+            print(f"❌ Please choose between 0 and {len(available)-1}.")
 
-    # Selezione risoluzione
+    # Resolution selection
     if force_resolution or "camera_resolution" not in CONFIG:
-        if not selected_caps:
-            print(
-                "⚠️ Nessuna risoluzione disponibile via pygrabber, uso risoluzione di default."
-            )
-        else:
-            print("📏 Risoluzioni disponibili:")
+        if selected_caps:
+            print("📏 Available resolutions:")
             for i, capab in enumerate(selected_caps):
                 print(
-                    f"  {i}: {capab['width']}x{capab['height']} @ {capab['max_fps']} fps"
+                    f"  {i}: {capab['width']}x{capab['height']} @ {capab['max_fps']}fps"
                 )
             while True:
-                res_input = input("👉 Seleziona la risoluzione da usare: ").strip()
-                if not res_input.isdigit():
-                    print("❌ Inserisci solo un numero valido.")
+                choice = input("👉 Select resolution index: ").strip()
+                if not choice.isdigit():
+                    print("❌ Enter a valid number.")
                     continue
-                res = int(res_input)
-                if 0 <= res < len(selected_caps):
-                    selected_width = selected_caps[res]["width"]
-                    selected_height = selected_caps[res]["height"]
-                    CONFIG["camera_resolution"] = [selected_width, selected_height]
+                idx = int(choice)
+                if 0 <= idx < len(selected_caps):
+                    w = selected_caps[idx]["width"]
+                    h = selected_caps[idx]["height"]
+                    CONFIG["camera_resolution"] = [w, h]
                     conf_utils.save_config()
                     break
-                else:
-                    print(f"❌ Inserisci un numero tra 0 e {len(selected_caps) - 1}.")
+                print(f"❌ Choose between 0 and {len(selected_caps)-1}.")
+        else:
+            print("⚠️ No resolution info, using defaults.")
 
     return selected_idx
 
 
-# seleziona la finestra di gioco che deve avere il focus per abilitare l'invio
-def choose_monitored_window():
+def choose_monitored_window() -> str:
+    """
+    Determine which window title to monitor for focus.
 
-    # se nella configurazione esiste restituisce il nome della finestra trovata
-    game_window = CONFIG.get("game_window_title")
-    if game_window is not None:
-        return game_window
+    Returns:
+        str: The chosen window title, or 'unused' if focus check disabled.
+    """
+    title = CONFIG.get("game_window_title")
+    if title:
+        return title
 
-    # altrimenti prova a cercare le finestre (funzione disponibile solo su Windows)
-    # se non disponibile win32gui disattiva
     if win32gui is None:
-        print("⚠️ Funzionalità non disponibile su questo sistema.")
+        print("⚠️ Focus selection not available on this OS.")
         CONFIG["game_window_title"] = "unused"
         conf_utils.save_config()
-        return CONFIG.get("game_window_title")
+        return "unused"
 
-    # se non ci sono finestre attive disattiva la funzione
-    titles = list_open_windows()
-    if not titles:
-        print("❌ Nessuna finestra attiva rilevata.")
+    windows = list_open_windows()
+    if not windows:
+        print("❌ No open windows detected.")
         CONFIG["game_window_title"] = "unused"
         conf_utils.save_config()
-        return CONFIG.get("game_window_title")
+        return "unused"
 
-    # chiede all'utente di scegliere la finestra da monitorare
-    print("🔍 Elenco delle finestre aperte:")
-    titles.append("Unused")
-    for i, t in enumerate(titles):
-        print(f"  {i}: {t}")
-
+    print("🔍 Open windows:")
+    windows.append("unused")
+    for i, w in enumerate(windows):
+        print(f"  {i}: {w}")
     while True:
-        choice = input("👉 Inserisci il numero della finestra da monitorare: ").strip()
-        if choice.isdigit() and int(choice) in range(len(titles)):
-            selected_title = titles[int(choice)]
-            CONFIG["game_window_title"] = selected_title
-            print(f"🎮 Finestra selezionata: '{selected_title}'")
+        choice = input("👉 Select window index: ").strip()
+        if choice.isdigit() and int(choice) in range(len(windows)):
+            sel = windows[int(choice)]
+            CONFIG["game_window_title"] = sel
             conf_utils.save_config()
-            break
-        else:
-            print("❌ Scelta non valida. Riprova.")
-    return CONFIG.get("game_window_title")
+            return sel
+        print("❌ Invalid selection.")
 
 
-def main():
-
+def main() -> None:
+    """
+    Entry point: initialize config, select camera/window, load actions,
+    start voice listener, and run the processing loop.
+    """
     conf_utils.init_config()
 
-    listener_thread = None
+    listener: Optional[audio_utils.threading.Thread] = None
+    tui_thread = None
 
-    # Configurazione UDP per invio sequenze alla tastiera
+    # Prepare UDP socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     try:
-
-        # recupera impostazioni cam
-        camera_idx = load_or_select_camera(conf_utils.args.reset_camera, conf_utils.args.reset_resolution)
-
-        if camera_idx is None:
+        cam_idx = load_or_select_camera(
+            conf_utils.args.reset_camera, conf_utils.args.reset_resolution
+        )
+        if cam_idx is None:
             return
-        
-        # gestisce richiesta acquisizione fotogramma cam
+
+        # Screenshot mode
         if conf_utils.args.shot:
             conf_utils.save_config()
-            cv_utils.take_shot(camera_idx)
+            cv_utils.take_shot(cam_idx)
             return
 
-        # gestisce selezione focus finestra
-        should_check_focus = True
-        game_window = choose_monitored_window()
-        if game_window.lower() == "unused":
-            should_check_focus = False
-        # --
+        # Window focus configuration
+        should_check = True
+        win_title = choose_monitored_window()
+        if win_title.lower() == "unused":
+            should_check = False
 
-        # Caricamento azioni
-        actions = CONFIG.get("actions", {})
-        if not actions:
-            print("❌ Nessuna azione definita in config.json → 'actions'")
+        # Load action definitions
+        actions_cfg = CONFIG.get("actions", {})  # type: ignore
+        if not actions_cfg:
+            print("❌ No actions defined in config.json")
             return
 
-        print("🔧 Azioni caricate:")
-        for key in sorted(actions):
-            entry = actions[key]
-            print(f"  '{key}' → {entry['path'] if isinstance(entry, dict) else entry}")
+        actions_data = cv_utils.load_actions(actions_cfg)  # type: ignore
 
-        # carica le azioni e valida e manipola le immagini da utilizzare
-        actions_data = cv_utils.load_actions(actions)
+        tui_thread = tui_utils.start_tui()
 
-        # Avvia il thread di riconoscimento vocale
+        # Start voice control if not in test mode
         if not conf_utils.args.test:
-            listener_thread = audio_utils.start_listening()
-            
-        print("🔍 Bot attivo")
-        if should_check_focus:
-            print(f"🎯 Monitoraggio finestra: {game_window}")
-        else:
-            print("🎯 Nessun controllo finestra attiva (modalità 'Unused')")
+            listener = audio_utils.start_listening()
 
-        # se non sono in modalità headless stampa i comandi accettati
-        if not CONFIG.get("headless"):
-            print("q --> esce")
-            print("+ --> aumenta threshold")
-            print("- --> dimiuisce threshold")
-            print(", --> aumenta cooldown")
-            print(". --> diminuisce cooldown")
-            print("* --> aumenta sleep frame")
-            print("/ --> dimiuisce sleep frame")
-            print(
-                "m --> cambia algoritmo matching (attuale:", CONFIG.get("match_method"), ")"
-            )
-            print("i --> attiva/disattiva inversione")
-            print("b --> attiva/disattiva blur")
-            print("e --> attiva/disattiva equalizzazione")
-            print("s --> attiva/disattiva sector matching")
-            print("u --> attiva/disattiva uso maschere")
+        print("🔍 Bot started")
+        if should_check:
+            print(f"🎯 Monitoring window: {win_title}")
 
-        windows_focused = is_game_window_focused(should_check_focus)
+        cv_utils.frame_loop(
+            cam_idx,
+            actions_data,
+            sock,
+            is_game_window_focused(should_check),
+            conf_utils.args.test,
+        )
 
-        cv_utils.frame_loop(camera_idx, actions_data, sock, windows_focused, conf_utils.args.test)
     finally:
-        # ferma listener vocale
-        if listener_thread:
-            audio_utils.stop_listening(listener_thread)
+        tui_utils.stop_tui(tui_thread)
+
+        if listener:
+            audio_utils.stop_listening(listener)
         conf_utils.save_config()
 
 

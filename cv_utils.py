@@ -1,6 +1,8 @@
 import os
 from datetime import datetime
 import time
+from socket import socket as Socket
+from typing import Any, Dict, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -12,176 +14,281 @@ import audio_utils
 DEF_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
-def resize_win(name, width, height):
+def resize_win(name: str, width: int, height: int) -> None:
+    """
+    Resize an OpenCV window while preserving aspect ratio.
+
+    Parameters:
+        name (str): Name of the OpenCV window (created via cv2.namedWindow).
+        width (int): Desired window width in pixels.
+        height (int): Desired window height in pixels.
+    """
     cv2.namedWindow(name, cv2.WINDOW_KEEPRATIO)
     cv2.resizeWindow(name, width, height)
 
 
-def try_cam(idx):
-    cam_ok = False
+def try_cam(idx: int) -> bool:
+    """
+    Test whether a camera device can be opened and returns a frame.
+
+    Parameters:
+        idx (int): Index of the camera device to test (e.g., 0 for the first webcam).
+
+    Returns:
+        bool: True if the camera opens and a frame is successfully captured; False otherwise.
+    """
     capture = cv2.VideoCapture(idx)
-    if capture.read()[0]:
-        cam_ok = True
+    ok, _ = capture.read()
     capture.release()
-    return cam_ok
+    return bool(ok)
 
 
-def load_camera(idx):
+def load_camera(idx: int) -> cv2.VideoCapture:
+    """
+    Open and configure the camera for frame capture, updating CONFIG with actual resolution.
+
+    Parameters:
+        idx (int): Index of the camera device to open.
+
+    Returns:
+        cv2.VideoCapture: The configured VideoCapture object.
+    """
     cap = cv2.VideoCapture(idx)
 
-    # prova ad impostare risoluzione custom
+    # Apply custom resolution if provided in CONFIG
     if "camera_resolution" in CONFIG:
-        width, height = CONFIG.get("camera_resolution")
+        width, height = CONFIG.get("camera_resolution", [0, 0])  # type: ignore
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
-    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    CONFIG["camera_resolution"] = [int(width), int(height)]
+    # Read back the actual resolution and store it in CONFIG
+    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    CONFIG["camera_resolution"] = [actual_width, actual_height]
 
     print("📏 Risoluzione selezionata:")
-    print("   Larghezza:", cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    print("   Altezza:  ", cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"   Larghezza: {actual_width}")
+    print(f"   Altezza:   {actual_height}")
     return cap
 
 
-# Preprocessa l'immagine applicando effetti per cercare di migliorare
-# il match del template
-def preprocess_image(img):
+def preprocess_image(img: np.ndarray) -> np.ndarray:
+    """
+    Apply preprocessing steps to improve template matching accuracy.
 
-    preprocessed = img
+    Steps applied, in order:
+    1. Convert BGR to grayscale (if needed).
+    2. Invert colors (if CONFIG['preprocess_invert'] is True).
+    3. Apply Gaussian blur (if CONFIG['preprocess_blur'] is True).
+    4. Equalize histogram (if CONFIG['preprocess_equalize'] is True).
 
-    # converte in scala di grigi (se non è gia stato fatto), questo deve essere sempre fatto perchè il template matching funziona meglio con le immagini in scala di grigi
-    if len(img.shape) == 3 and img.shape[2] == 3:
-        preprocessed = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    Parameters:
+        img (np.ndarray): Input image in BGR or grayscale format.
 
-    # inverte i colori
+    Returns:
+        np.ndarray: Preprocessed grayscale image.
+    """
+    result = img.copy()
+
+    # Convert to grayscale if input is BGR
+    if result.ndim == 3 and result.shape[2] == 3:
+        result = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+
+    # Optionally invert
     if CONFIG.get("preprocess_invert", True):
-        preprocessed = cv2.bitwise_not(preprocessed)
+        result = cv2.bitwise_not(result)
 
-    # applicata leggera sfocatura
+    # Optionally blur
     if CONFIG.get("preprocess_blur", True):
-        preprocessed = cv2.GaussianBlur(preprocessed, (3, 3), 0)
+        result = cv2.GaussianBlur(result, (3, 3), 0)
 
-    # applica equalizzazione
+    # Optionally equalize histogram
     if CONFIG.get("preprocess_equalize", True):
-        preprocessed = cv2.equalizeHist(preprocessed)
+        result = cv2.equalizeHist(result)
 
-    return preprocessed
+    return result
 
 
-# --- ROI extraction utility ---
-def extract_roi(image, roi):
+def extract_roi(
+    image: np.ndarray, roi: Optional[Tuple[int, int, int, int]]
+) -> np.ndarray:
+    """
+    Crop the given image to a specified region of interest.
+
+    Parameters:
+        image (np.ndarray): Source image (grayscale or BGR).
+        roi (Optional[Tuple[int, int, int, int]]):
+            A tuple (x, y, w, h) specifying the top-left corner and size,
+            or None to return the full image.
+
+    Returns:
+        np.ndarray: The cropped ROI image, or the original image if roi is None or empty.
+    """
     if not roi:
         return image
+
     x, y, w, h = roi
     return image[y : y + h, x : x + w]
 
 
-# individua il template nella regione di interesse del frame (o nell'interno frame se non è presente una regione di interesse)
-def match_with_roi(frame, action):
+def match_with_roi(
+    frame: np.ndarray, action: Dict[str, Any]
+) -> Tuple[bool, float, Optional[Tuple[int, int]]]:
+    """
+    Perform template matching within an optional region of interest.
 
-    template = action.get("template")
-    mask = action.get("mask_data")
-    roi = action.get("roi")
+    Steps:
+      1. Extract ROI from frame if 'roi' in action.
+      2. Preprocess region and template (and mask if present).
+      3. Choose matching method from CONFIG.
+      4. Dispatch to full or sector-based matching.
 
-    if roi is not None:
-        region = extract_roi(frame, roi)
+    Parameters:
+        frame (np.ndarray): Grayscale source image.
+        action (Dict[str, Any]): Dict containing:
+            - 'template' (np.ndarray): Template image.
+            - 'mask_data' (Optional[np.ndarray]): Optional mask.
+            - 'roi' (Optional[Tuple[int,int,int,int]]): Region of interest.
+
+    Returns:
+        Tuple[bool, float, Optional[Tuple[int,int]]]:
+            matched (bool): True if match score >= threshold.
+            score (float): Best match score.
+            location (Tuple[int,int] or None): Coordinates of best match.
+    """
+    # Extract template, mask, and ROI settings
+    template_img: np.ndarray = action.get("template")  # type: ignore
+    mask_img: Optional[np.ndarray] = action.get("mask_data")  # type: ignore
+    roi: Optional[Tuple[int, int, int, int]] = action.get("roi")  # type: ignore
+
+    # Determine search region
+    search_region: np.ndarray
+    if roi:
+        search_region = extract_roi(frame, roi)
     else:
-        region = frame
+        search_region = frame
 
-    region = preprocess_image(region)
-    template = preprocess_image(template)
-    # se presente una maschera preprocessa anceh la maschera (TODO: da valutare se necessario)
-    if mask is not None:
-        mask = preprocess_image(mask)
+    # Preprocess images
+    proc_region = preprocess_image(search_region)
+    proc_template = preprocess_image(template_img)
+    proc_mask = preprocess_image(mask_img) if mask_img is not None else None
 
-    # metodo di ricerca immagine
-    method_name = CONFIG.get("match_method", "TM_CCOEFF_NORMED")
-    method = getattr(cv2, method_name, cv2.TM_CCOEFF_NORMED)
-
-    use_mask = (
-        CONFIG.get("match_use_mask", False)
-        and mask is not None
+    # Configure method and mask usage
+    method_name: str = CONFIG.get("match_method", "TM_CCOEFF_NORMED")  # type: ignore
+    method: int = getattr(cv2, method_name, cv2.TM_CCOEFF_NORMED)
+    threshold: float = float(CONFIG.get("threshold", 0.0))  # type: ignore
+    use_mask: bool = (
+        CONFIG.get("match_use_mask", False)  # type: ignore
+        and proc_mask is not None
         and method_name in ["TM_CCORR_NORMED", "TM_SQDIFF", "TM_SQDIFF_NORMED"]
     )
 
-    threshold = CONFIG.get("threshold")
-    if CONFIG.get("match_sector_enabled", False):  # ricerca per settori
+    # Dispatch to sector or full matching
+    if CONFIG.get("match_sector_enabled", False):  # type: ignore
         return match_template_in_sectors(
-            region, template, mask, threshold, use_mask, method
+            proc_region, proc_template, proc_mask, threshold, use_mask, method
         )
-    else:  # ricerca immagine completa
-        return match_template(region, template, mask, threshold, use_mask, method)
+    return match_template(
+        proc_region, proc_template, proc_mask, threshold, use_mask, method
+    )
 
 
-# ricerca il template nella regione di interesse
 def match_template(
-    region,  # regione di ricerca dell'immagine
-    template,  # template da cercare
-    mask,  # maschera da utilizzare
-    threshold,  # soglia di rilevamento
-    use_mask,  # flag che indica se deve essere utilizzata la maschera nella ricerca
-    method,  # metodo di ricerca
-):
+    region: np.ndarray,
+    template: np.ndarray,
+    mask: Optional[np.ndarray],
+    threshold: float,
+    use_mask: bool,
+    method: int,
+) -> Tuple[bool, float, Optional[Tuple[int, int]]]:
+    """
+    Perform standard template matching using OpenCV matchTemplate.
 
+    Parameters:
+        region (np.ndarray): Search region image.
+        template (np.ndarray): Template to search for.
+        mask (Optional[np.ndarray]): Optional mask for matching.
+        threshold (float): Minimum score to consider a match.
+        use_mask (bool): If True, apply mask in matchTemplate.
+        method (int): OpenCV matching method constant.
+
+    Returns:
+        Tuple[bool, float, Optional[Tuple[int,int]]]:
+            matched (bool): True if best score >= threshold.
+            score (float): Best match score.
+            location (Tuple[int,int] or None): Coordinates of match.
+    """
     try:
-        if use_mask:
+        if use_mask and mask is not None:
             result = cv2.matchTemplate(region, template, method, mask=mask)
         else:
             result = cv2.matchTemplate(region, template, method)
-
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
         if max_val >= threshold:
             return True, max_val, max_loc
         return False, max_val, None
+    except Exception:
+        return False, 0.0, None
 
-    except:
-        return False, 0, None
 
-
-# ricerca il template nella regione di interesse dividendo il template in settori
 def match_template_in_sectors(
-    region,  # regione di ricerca dell'immagine
-    template,  # template da cercare
-    mask,  # maschera da utilizzare
-    threshold,  # soglia di rilevamento
-    use_mask,  # flag che indica se deve essere utilizzata la maschera nella ricerca
-    method,  # metodo di ricerca
-):
-    rows, cols = CONFIG.get("match_sector_grid", [2, 2])
-    required = CONFIG.get("match_sector_min_success", 3)
+    region: np.ndarray,
+    template: np.ndarray,
+    mask: Optional[np.ndarray],
+    threshold: float,
+    use_mask: bool,
+    method: int,
+) -> Tuple[bool, float, Optional[Tuple[int, int]]]:
+    """
+    Divide the template into a grid and match each sector independently.
 
-    h, w = template.shape
-    sector_w = w // cols
-    sector_h = h // rows
+    Parameters:
+        region (np.ndarray): Search region image.
+        template (np.ndarray): Full template image.
+        mask (Optional[np.ndarray]): Mask image or None.
+        threshold (float): Score threshold per sector.
+        use_mask (bool): If True, apply mask per sector.
+        method (int): OpenCV matching method constant.
+
+    Returns:
+        Tuple[bool, float, Optional[Tuple[int,int]]]:
+            matched (bool): True if enough sectors exceed threshold.
+            best_score (float): Highest sector score.
+            best_loc (Tuple[int,int] or None): Location of best sector match.
+    """
+    # Grid configuration
+    rows, cols = CONFIG.get("match_sector_grid", [2, 2])  # type: ignore
+    required: int = int(CONFIG.get("match_sector_min_success", 1))  # type: ignore
+
+    h, w = template.shape[:2]
+    sector_width = w // cols
+    sector_height = h // rows
 
     matches = 0
-    best_score = 0
-    best_loc = None
+    best_score = 0.0
+    best_loc: Optional[Tuple[int, int]] = None
 
+    # Iterate sectors
     for i in range(rows):
         for j in range(cols):
-            x = j * sector_w
-            y = i * sector_h
-            sector_template = template[y : y + sector_h, x : x + sector_w]
-            sector_mask = mask[y : y + sector_h, x : x + sector_w] if use_mask else None
-
+            x0, y0 = j * sector_width, i * sector_height
+            sub_tmpl = template[y0 : y0 + sector_height, x0 : x0 + sector_width]
+            sub_mask = (
+                mask[y0 : y0 + sector_height, x0 : x0 + sector_width]
+                if use_mask and mask is not None
+                else None
+            )
             try:
-                if use_mask:
-                    result = cv2.matchTemplate(
-                        region, sector_template, method, mask=sector_mask
-                    )
+                if use_mask and sub_mask is not None:
+                    res = cv2.matchTemplate(region, sub_tmpl, method, mask=sub_mask)
                 else:
-                    result = cv2.matchTemplate(region, sector_template, method)
-
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    res = cv2.matchTemplate(region, sub_tmpl, method)
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
                 if max_val > best_score:
-                    best_score = max_val
-                    best_loc = max_loc
+                    best_score, best_loc = max_val, max_loc
                 if max_val >= threshold:
                     matches += 1
-            except:
+            except Exception:
                 continue
 
     if matches >= required:
@@ -189,110 +296,137 @@ def match_template_in_sectors(
     return False, best_score, None
 
 
-# mostra feedback e informazioni come overlay dell'immagine acquisita
-def update_overlay(size, actions):
+def update_overlay(size: Tuple[int, int], actions: Dict[str, Any]) -> np.ndarray:
+    """
+    Generate a visual overlay with configuration parameters and ROI outlines.
 
-    print("Rigenera overlay")
+    This overlay can be blended over the video frame to provide real-time
+    feedback on matching thresholds, preprocessing settings, and defined ROIs.
 
-    h, w = size
-    overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    Parameters:
+        size (Tuple[int, int]):
+            The height and width of the target frame as (height, width).
+        actions (Dict[str, Any]):
+            Dictionary of action definitions, each containing:
+            - 'roi': Optional[Tuple[int, int, int, int]] specifying the region of interest.
 
-    # testo 1
-    label1 = f"Threshold: {CONFIG['threshold']:.2f} | Cooldown: {CONFIG['cooldown']:.1f}s | Sleep: {CONFIG['sleep']:.2f}s"
+    Returns:
+        np.ndarray: A BGR image of the same size as 'size', containing text and ROI rectangles.
+    """
+    # Unpack frame dimensions
+    height, width = size
+    # Create a blank BGR overlay
+    overlay: np.ndarray = np.zeros((height, width, 3), dtype=np.uint8)
+
+    # Configuration labels
+    label1 = (
+        f"Threshold: {CONFIG['threshold']:.2f} | "
+        f"Cooldown: {CONFIG['cooldown']:.1f}s | "
+        f"Sleep: {CONFIG['sleep']:.2f}s"
+    )
     cv2.putText(overlay, label1, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
     cv2.putText(overlay, label1, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
 
-    # testo 2
     label2 = f"Matching: {CONFIG.get('match_method')}"
     cv2.putText(overlay, label2, (10, 65), DEF_FONT, 0.8, (0, 0, 0), 2)
     cv2.putText(overlay, label2, (10, 65), DEF_FONT, 0.8, (0, 255, 255), 1)
 
-    label3 = f"Invert:{'Y' if CONFIG['preprocess_invert'] else 'N'} | Blur:{'Y' if CONFIG['preprocess_blur'] else 'N'} | Eq:{'Y' if CONFIG['preprocess_equalize'] else 'N'} | Sector:{'Y' if CONFIG.get('match_sector_enabled') else 'N'} | Mask:{'Y' if CONFIG.get('match_use_mask') else 'N'}"
+    label3 = (
+        f"Invert:{'Y' if CONFIG.get('preprocess_invert') else 'N'} | "
+        f"Blur:{'Y' if CONFIG.get('preprocess_blur') else 'N'} | "
+        f"Eq:{'Y' if CONFIG.get('preprocess_equalize') else 'N'} | "
+        f"Sector:{'Y' if CONFIG.get('match_sector_enabled') else 'N'} | "
+        f"Mask:{'Y' if CONFIG.get('match_use_mask') else 'N'}"
+    )
     cv2.putText(overlay, label3, (10, 95), DEF_FONT, 0.8, (0, 0, 0), 2)
     cv2.putText(overlay, label3, (10, 95), DEF_FONT, 0.8, (0, 255, 255), 1)
 
-    # Fase 1: Rilevamento iniziale (senza dipendenze)
-    for _, action_data in actions.items():
-        roi = action_data.get("roi")
-        # se presente roi la disegna per avere feedback visivo
+    # Draw ROI rectangles for each action
+    for action in actions.values():
+        roi = action.get("roi")
         if roi:
-            x, y, w, h = roi
-            cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            x, y, w_box, h_box = roi  # type: ignore
+            cv2.rectangle(overlay, (x, y), (x + w_box, y + h_box), (0, 0, 255), 2)
 
     return overlay
 
 
-# processa il frame acquisito dalla cam
 def process_frame(
-    frame,  # immagine acquisita dalla camera
-    actions,  # azioni caricate
-    last_sent_time,  # timestamp ultimi invii
-    sock,  # socket invio key
-    windows_focused,  # flag che indica se finestar gioco ha focus
-    test,  # flag che indica se bot avviato in modalità test
-    overlay,  # immagine da mostrare sopra al frame con le info
-):
+    frame: np.ndarray,
+    actions: Dict[str, Any],
+    last_sent_time: Dict[str, float],
+    sock: Socket,
+    windows_focused: bool,
+    test: bool,
+    overlay: np.ndarray,
+) -> None:
+    """
+    Process a single video frame: detect templates, validate dependencies,
+    draw feedback, and send commands via UDP socket if conditions met.
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    pre_matches = {}  # template trovati
-    confirmed_matches = {}  # templati risconosciuti dopo validazione dipendenze
+    Parameters:
+        frame (np.ndarray): BGR frame from the camera.
+        actions (Dict[str, Any]): Action definitions including 'template', 'roi', 'requires', etc.
+        last_sent_time (Dict[str, float]): Mapping of action keys to last send timestamp.
+        sock (socket.socket): UDP socket for sending action commands.
+        windows_focused (bool): True if the game window has focus.
+        test (bool): If True, do not send UDP packets but only log.
+        overlay (np.ndarray): Precomputed overlay image to blend on the frame.
 
-    # Fase 1: Rilevamento iniziale (senza dipendenze)
+    Returns:
+        None
+    """
+    gray_frame: np.ndarray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    pre_matches: Dict[str, Tuple[float, Tuple[int, int]]] = {}
+    confirmed_matches: Dict[str, Tuple[float, Tuple[int, int]]] = {}
+
+    # Phase 1: initial detection
     for key, action_data in actions.items():
-        roi = action_data.get("roi")
-        matched, max_val, max_loc = match_with_roi(gray, action_data)
-
+        matched, score, loc = match_with_roi(gray_frame, action_data)
         if matched:
-            pre_matches[key] = (max_val, max_loc)
+            pre_matches[key] = (score, loc)  # type: ignore
 
-    # Fase 2: Validazione con dipendenze
-    for key, (max_val, max_loc) in pre_matches.items():
+    # Phase 2: dependency validation
+    for key, (score, loc) in pre_matches.items():
         action_data = actions.get(key, {})
-        required = set(action_data.get("requires", []))
-        required_not = set(action_data.get("requires_not", []))
-
-        if not required.issubset(pre_matches.keys()):  # controlla dipendenze richieste
+        requires = set(action_data.get("requires", []))
+        requires_not = set(action_data.get("requires_not", []))
+        if not requires.issubset(pre_matches.keys()):
             continue
-        if required_not & pre_matches.keys():  # controlla dipendenze non richieste
+        if requires_not & pre_matches.keys():
             continue
+        confirmed_matches[key] = (score, loc)
 
-        confirmed_matches[key] = (max_val, max_loc)
-
-    # Fase 3: Visualizzazione ed invio tasti
-    for key, (max_val, max_loc) in confirmed_matches.items():
+    # Phase 3: drawing and sending
+    for key, (score, loc) in confirmed_matches.items():
         action_data = actions.get(key, {})
         now = time.time()
-
-        # valuta se inviare la sequenza alla tastiera
         should_send = (
-            not test  # non devo essere in test
-            and actions[key].get(
-                "send", True
-            )  # deve essere presente configurazione "send" a true
-            and (  # valuta cooldown tra invii per evitare spam dei tasti
+            not test
+            and action_data.get("send", True)
+            and (
                 key not in last_sent_time
-                or (now - last_sent_time[key]) >= CONFIG.get("cooldown")
+                or (now - last_sent_time[key]) >= float(CONFIG.get("cooldown", 0.0))
             )
-            and windows_focused  # deve essere selezionata la finestra del gioco
+            and windows_focused
             and audio_utils.active_event.is_set()
         )
-
         if should_send:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             print(
-                f"[{timestamp}] ✅ Match '{key}' ({max_val:.2f}) → invio a {CONFIG['ip']}:{CONFIG['port']}"
+                f"[{timestamp}] ✅ Match '{key}' ({score:.2f}) → {CONFIG.get('ip')}:{CONFIG.get('port')}"
             )
             sock.sendto(key.encode(), (CONFIG.get("ip"), CONFIG.get("port")))
             last_sent_time[key] = now
 
-        if not CONFIG.get("headless"):
-            # Disegna il feedback del rilevamento
+        if not CONFIG.get("headless", False):
             roi = action_data.get("roi")
-            w, h = action_data.get("dimensions")
-            top_left = (max_loc[0] + roi[0], max_loc[1] + roi[1]) if roi else max_loc
-            bottom_right = (top_left[0] + w, top_left[1] + h)
+            dims = action_data.get("dimensions", (0, 0))  # type: ignore
+            w_box, h_box = dims
+            top_left = (loc[0] + roi[0], loc[1] + roi[1]) if roi else loc  # type: ignore
+            bottom_right = (top_left[0] + w_box, top_left[1] + h_box)
             cv2.rectangle(frame, top_left, bottom_right, (0, 255, 0), 2)
-            label = f"{key} ({max_val:.2f})"
+            label = f"{key} ({score:.2f})"
             cv2.putText(
                 frame,
                 label,
@@ -303,259 +437,360 @@ def process_frame(
                 2,
             )
 
-    if CONFIG.get("headless"):
-        return
+    # Blend overlay and show preview
+    if not CONFIG.get("headless", False):
+        draw_match_preview(frame, gray_frame, pre_matches, actions)
+        combined = cv2.addWeighted(frame, 1.0, overlay, 1.0, 0)
+        cv2.imshow("Webcam Bot", combined)
 
-    draw_match_preview(frame, gray, pre_matches, actions)
-    combined = cv2.addWeighted(frame, 1.0, overlay, 1.0, 0)
-    cv2.imshow("Webcam Bot", combined)
 
-
-# mostra in sovraimpressione i template trovati
 def draw_match_preview(
-    frame,  # immagine acquisita dalla camera
-    gray_frame,  # immagine in scala di grigi
-    matches,  # elementi individuati
-    action_data,  # azioni
-):
-    thumb_size = 100  # dimensione anteprima
-    margin = 10
-    x_offset = margin
-    y_offset = frame.shape[0] - thumb_size - margin
+    frame: np.ndarray,
+    gray_frame: np.ndarray,
+    matches: Dict[str, Tuple[float, Tuple[int, int]]],
+    actions: Dict[str, Any],
+) -> None:
+    """
+    Draw thumbnail previews of matched templates at the bottom of the frame.
+
+    Parameters:
+        frame (np.ndarray): BGR frame to draw on.
+        gray_frame (np.ndarray): Grayscale version of the frame for ROI extraction.
+        matches (Dict[str, Tuple[float, Tuple[int,int]]]): Detected matches with scores and locations.
+        actions (Dict[str, Any]): Action definitions including 'roi'.
+
+    Returns:
+        None
+    """
+    thumb_size: int = 100
+    margin: int = 10
+    x_offset: int = margin
+    y_offset: int = frame.shape[0] - thumb_size - margin
 
     for key in sorted(matches):
-        roi = action_data[key].get("roi")
+        roi = actions[key].get("roi")  # type: ignore
         if not roi:
             continue
-
-        region = extract_roi(gray_frame, roi)
+        region = extract_roi(gray_frame, roi)  # type: ignore
         processed = preprocess_image(region)
         thumb = cv2.resize(processed, (thumb_size, thumb_size))
         thumb_color = cv2.cvtColor(thumb, cv2.COLOR_GRAY2BGR)
-
-        # Calcola posizione e inserisce nel frame principale
-        x_end = x_offset + thumb_size
-        if x_end > frame.shape[1] - margin:
-            break  # finito lo spazio orizzontale
-        frame[y_offset : y_offset + thumb_size, x_offset:x_end] = thumb_color
+        if x_offset + thumb_size > frame.shape[1] - margin:
+            break
+        frame[y_offset : y_offset + thumb_size, x_offset : x_offset + thumb_size] = (
+            thumb_color
+        )
         cv2.putText(
-            frame,
-            key,
-            (x_offset, y_offset - 5),
-            DEF_FONT,
-            0.5,
-            (0, 255, 255),
-            1,
+            frame, key, (x_offset, y_offset - 5), DEF_FONT, 0.5, (0, 255, 255), 1
         )
         x_offset += thumb_size + margin
 
 
-def get_cv_key():
+def get_cv_key() -> int:
+    """
+    Wrapper for OpenCV waitKey to fetch a single key press.
+
+    Returns:
+        int: Lower 8 bits of the key code.
+    """
     return cv2.waitKey(1) & 0xFF
 
 
-# acquisisce uno screen di quello che vede la webcam
-# da utilizzare per costruire i template e le maschere
-# di riconoscimento
-def take_shot(camera_idx):
+def take_shot(camera_idx: int) -> Optional[str]:
+    """
+    Capture a single frame from the webcam and save it as an image file.
 
-    if CONFIG.get("headless"):
-        print("🎥 Non è possibile acquisire uno screenshot in modalità HEADLESS")
-        return
+    Opens an interactive window displaying the live feed. User can press:
+      - SPACE (32) to take a screenshot and save it to 'img/screenshot-YYYYMMDD-HHMMSS.png'
+      - ESC (27) to exit without saving
+
+    Parameters:
+        camera_idx (int): Index of the camera device to use.
+
+    Returns:
+        Optional[str]: File path of saved screenshot if taken, None otherwise.
+    """
+    # Do not capture in headless mode
+    if CONFIG.get("headless", False):
+        print("🎥 Cannot capture screenshot in HEADLESS mode")
+        return None
 
     cap = load_camera(camera_idx)
+    window_title = "Scatta immagine"
 
     print("🎥 Premi SPAZIO per scattare, ESC per uscire")
+    saved_path: Optional[str] = None
+
     while True:
         ret, frame = cap.read()
         if not ret:
             continue
 
-        win_title = "Scatta immagine"
+        # Resize and show window
         resize_win(
-            win_title, CONFIG.get("window_size")[0], CONFIG.get("window_size")[1]
+            window_title,
+            CONFIG.get("window_size", [640, 480])[0],  # type: ignore
+            CONFIG.get("window_size", [640, 480])[1],  # type: ignore
         )
-        cv2.imshow(win_title, frame)
+        cv2.imshow(window_title, frame)
 
         key = get_cv_key()
         if key == 27:  # ESC
             break
-        if key == 32:  # SPAZIO
+        if key == 32:  # SPACE
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             os.makedirs("img", exist_ok=True)
             filename = f"img/screenshot-{timestamp}.png"
             cv2.imwrite(filename, frame)
             print(f"📸 Immagine salvata in {filename}")
+            saved_path = filename
             break
+
     cap.release()
     cv2.destroyAllWindows()
+    return saved_path
 
 
-# carica le actions definite dall'utente caricando e validando le immagini
-def load_actions(actions):
+def load_actions(actions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    Load and validate user-defined action templates and masks.
 
-    actions_data = {}
+    Reads each action's template image and optional mask, converts
+    them to grayscale, checks ROI bounds, and builds a structured
+    actions_data dictionary for runtime processing.
+
+    Parameters:
+        actions (Dict[str, Any]):
+            Mapping of action keys to configuration dicts, each containing:
+            - 'path' (str): File path to the template image.
+            - 'mask' (Optional[str]): File path to a mask image (grayscale).
+            - 'roi' (Optional[List[int]]): [x, y, w, h] region of interest.
+            - 'requires' (Optional[List[str]]): Actions that must also match.
+            - 'requires_not' (Optional[List[str]]): Actions that must not match.
+            - 'send' (Optional[bool]): Whether to send the action command.
+
+    Returns:
+        Dict[str, Dict[str, Any]]:
+            Processed actions data keyed by action name, each containing:
+            - 'requires' (Set[str])
+            - 'requires_not' (Set[str])
+            - 'roi' (Optional[Tuple[int,int,int,int]])
+            - 'path' (str)
+            - 'send' (bool)
+            - 'template' (np.ndarray): Grayscale template image.
+            - 'dimensions' (Tuple[int,int]): (width, height) of template.
+            - 'mask_data' (Optional[np.ndarray]): Grayscale mask image.
+    """
+    actions_data: Dict[str, Dict[str, Any]] = {}
 
     for key, info in actions.items():
+        # Dependencies
+        requires: Set[str] = set(info.get("requires", []))
+        requires_not: Set[str] = set(info.get("requires_not", []))
 
-        requires = info.get("requires", [])  # dipendenze
-        requires_not = info.get("requires_not", [])  # esclusioni
-
-        # controlla template
-        path = info.get("path")  # template
+        # Template path validation
+        path: str = info.get("path", "")  # type: ignore
         if not os.path.exists(path):
             print(f"⚠️ Immagine mancante per '{key}': {path}")
             continue
-        img = cv2.imread(path)
+        img: Optional[np.ndarray] = cv2.imread(path)
         if img is None:
             print(f"⚠️ Impossibile caricare '{path}'")
             continue
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray: np.ndarray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # controlla roi
-        roi = info.get("roi")  # roi
-        if roi and (
-            not isinstance(roi, list)
-            or len(roi) != 4
-            or not all(isinstance(x, int) for x in roi)
+        # ROI validation
+        raw_roi: Any = info.get("roi")
+        roi: Optional[Tuple[int, int, int, int]] = None
+        if (
+            isinstance(raw_roi, list)
+            and len(raw_roi) == 4
+            and all(isinstance(x, int) for x in raw_roi)
         ):
-            print(f"⚠️ ROI non valido per '{key}': {roi}")
-            info["roi"] = None
+            roi = tuple(raw_roi)  # type: ignore
+        elif raw_roi is not None:
+            print(f"⚠️ ROI non valido per '{key}': {raw_roi}")
 
-        # controlla maschera
-        raw_mask = None
-        mask_path = info.get("mask")
+        # Mask path validation
+        mask_data: Optional[np.ndarray] = None
+        mask_path: Optional[str] = info.get("mask")  # type: ignore
         if mask_path:
             if os.path.exists(mask_path):
                 raw_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                if raw_mask.shape != gray.shape:
-                    print(f"⚠️ Maschera per '{key}' ha dimensioni diverse dal template!")
                 if raw_mask is None:
                     print(f"⚠️ Impossibile caricare maschera '{mask_path}'")
+                elif raw_mask.shape != gray.shape:
+                    print(f"⚠️ Maschera per '{key}' ha dimensioni diverse dal template!")
+                    # Accept but warn
+                    mask_data = raw_mask
+                else:
+                    mask_data = raw_mask
             else:
                 print(f"⚠️ Maschera non trovata per '{key}': {mask_path}")
 
+        # Build action entry
         actions_data[key] = {
-            "requires": set(requires),  # dipendenza: azioni richieste
-            "requires_not": set(requires_not),  # dipendenza: azioni non richieste
-            "roi": roi,  # region of interest
-            "path": path,  # path del template
-            "send": info.get("send", True),  # should send key
-            "template": gray,  # immagine scala di grigi
-            "dimensions": gray.shape[::-1],  # dimensioni immagine
-            "mask_data": raw_mask,  # mascherda
+            "requires": requires,
+            "requires_not": requires_not,
+            "roi": roi,
+            "path": path,
+            "send": bool(info.get("send", True)),
+            "template": gray,
+            "dimensions": (gray.shape[1], gray.shape[0]),  # width, height
+            "mask_data": mask_data,
         }
 
     return actions_data
 
 
-# gestisce i comandi che modificano i parametri di riconoscimento e l'uscita dal programma in grafica
-def handle_ocv_keys():
+def handle_ocv_keys() -> Tuple[bool, bool]:
+    """
+    Process OpenCV key events to adjust configuration or request exit.
 
-    dirty_config = False
+    The following keys are handled:
+      - 'q': quit application
+      - ',': increase cooldown (max 10.0s)
+      - '.': decrease cooldown (min 0.0s)
+      - '*': increase sleep interval between frames (max 5.0s)
+      - '/': decrease sleep interval (min 0.0s)
+      - '+', '=': increase matching threshold (max 1.0)
+      - '-': decrease matching threshold (min 0.0)
+      - 'm': cycle through available template matching methods
+      - 'i': toggle color inversion preprocessing
+      - 'b': toggle Gaussian blur preprocessing
+      - 'e': toggle histogram equalization preprocessing
+      - 's': toggle sector-based matching
+      - 'u': toggle mask usage in matching
 
-    key = get_cv_key()
+    Returns:
+        exit_loop (bool): True if 'q' was pressed to exit.
+        dirty_config (bool): True if any configuration parameter was modified.
+    """
+    dirty_config: bool = False
+    exit_loop: bool = False
+
+    key: int = get_cv_key()
     if key == ord("q"):
-        return True, True
-    elif key == ord(","):  # aumenta cooldown invio tasti
-        CONFIG["cooldown"] = min(10.0, CONFIG.get("cooldown", 1.0) + 0.1)
+        exit_loop = True
         dirty_config = True
-        print(f"⏫ Cooldown aumentato: {CONFIG['cooldown']:.2f}s")
-    elif key == ord("."):  # riduce  cooldown invio tasti
-        CONFIG["cooldown"] = max(0.0, CONFIG.get("cooldown", 1.0) - 0.1)
+    elif key == ord(","):
+        CONFIG["cooldown"] = min(10.0, float(CONFIG.get("cooldown", 1.0)) + 0.1)
         dirty_config = True
-        print(f"⏬ Cooldown diminuito: {CONFIG['cooldown']:.2f}s")
-    elif key == ord("*"):  # aumenta sleep tra un frame processato e l'altro
-        CONFIG["sleep"] = min(5.0, CONFIG.get("sleep", 0.2) + 0.05)
+        print(f"⏫ Cooldown increased: {CONFIG['cooldown']:.2f}s")
+    elif key == ord("."):
+        CONFIG["cooldown"] = max(0.0, float(CONFIG.get("cooldown", 1.0)) - 0.1)
         dirty_config = True
-        print(f"⏫ Sleep aumentato: {CONFIG['sleep']:.2f}s")
-    elif key == ord("/"):  # riduce sleep tra un frame processato e l'altro
-        CONFIG["sleep"] = max(0.0, CONFIG.get("sleep", 0.2) - 0.05)
+        print(f"⏬ Cooldown decreased: {CONFIG['cooldown']:.2f}s")
+    elif key == ord("*"):
+        CONFIG["sleep"] = min(5.0, float(CONFIG.get("sleep", 0.2)) + 0.05)
         dirty_config = True
-        print(f"⏬ Sleep diminuito: {CONFIG['sleep']:.2f}s")
-    elif key == ord("+") or key == ord("="):  # aumenta la soglia di riconoscimento
-        CONFIG["threshold"] = min(1.0, CONFIG.get("threshold", 0.85) + 0.01)
+        print(f"⏫ Sleep increased: {CONFIG['sleep']:.2f}s")
+    elif key == ord("/"):
+        CONFIG["sleep"] = max(0.0, float(CONFIG.get("sleep", 0.2)) - 0.05)
         dirty_config = True
-        print(f"🔼 Threshold aumentato: {CONFIG['threshold']:.2f}")
-    elif key == ord("-"):  # riduce la soglia di riconoscimento
-        CONFIG["threshold"] = max(0.0, CONFIG.get("threshold", 0.85) - 0.01)
+        print(f"⏬ Sleep decreased: {CONFIG['sleep']:.2f}s")
+    elif key in (ord("+"), ord("=")):
+        CONFIG["threshold"] = min(1.0, float(CONFIG.get("threshold", 0.85)) + 0.01)
         dirty_config = True
-        print(f"🔽 Threshold diminuito: {CONFIG['threshold']:.2f}")
-    elif key == ord("m"):  # cambia il metodo di match del template
-        available_methods = ["TM_CCOEFF_NORMED", "TM_CCORR_NORMED", "TM_SQDIFF_NORMED"]
-        current = CONFIG.get("match_method", "TM_CCOEFF_NORMED")
-        idx = (available_methods.index(current) + 1) % len(available_methods)
-        CONFIG["match_method"] = available_methods[idx]
+        print(f"🔼 Threshold increased: {CONFIG['threshold']:.2f}")
+    elif key == ord("-"):
+        CONFIG["threshold"] = max(0.0, float(CONFIG.get("threshold", 0.85)) - 0.01)
         dirty_config = True
-        print(f"🔁 Metodo di matching cambiato: {CONFIG['match_method']}")
-    elif key == ord("i"):  # inverte i colori dell'immagine
-        CONFIG["preprocess_invert"] = not CONFIG.get("preprocess_invert", True)
+        print(f"🔽 Threshold decreased: {CONFIG['threshold']:.2f}")
+    elif key == ord("m"):
+        methods = ["TM_CCOEFF_NORMED", "TM_CCORR_NORMED", "TM_SQDIFF_NORMED"]
+        current = CONFIG.get("match_method", methods[0])
+        idx = (methods.index(current) + 1) % len(methods)
+        CONFIG["match_method"] = methods[idx]
         dirty_config = True
-        print(
-            f"🌓 Inversione {'attivata' if CONFIG['preprocess_invert'] else 'disattivata'}"
-        )
-    elif key == ord("b"):  # applica blur all'immagine
-        CONFIG["preprocess_blur"] = not CONFIG.get("preprocess_blur", True)
-        dirty_config = True
-        print(f"🌫️ Blur {'attivato' if CONFIG['preprocess_blur'] else 'disattivato'}")
-    elif key == ord("e"):  # equalizza immagine
-        CONFIG["preprocess_equalize"] = not CONFIG.get("preprocess_equalize", True)
+        print(f"🔁 Matching method set to: {CONFIG['match_method']}")
+    elif key == ord("i"):
+        CONFIG["preprocess_invert"] = not bool(CONFIG.get("preprocess_invert", True))
         dirty_config = True
         print(
-            f"📊 Equalizzazione {'attivata' if CONFIG['preprocess_equalize'] else 'disattivata'}"
+            f"🌓 Inversion {'enabled' if CONFIG['preprocess_invert'] else 'disabled'}"
         )
-    elif key == ord("s"):  # attiva matching in settori
-        CONFIG["match_sector_enabled"] = not CONFIG.get("match_sector_enabled", False)
+    elif key == ord("b"):
+        CONFIG["preprocess_blur"] = not bool(CONFIG.get("preprocess_blur", True))
+        dirty_config = True
+        print(f"�️ Blur {'enabled' if CONFIG['preprocess_blur'] else 'disabled'}")
+    elif key == ord("e"):
+        CONFIG["preprocess_equalize"] = not bool(
+            CONFIG.get("preprocess_equalize", True)
+        )
         dirty_config = True
         print(
-            f"🧩 Sector Matching {'attivato' if CONFIG['match_sector_enabled'] else 'disattivato'}"
+            f"📊 Equalization {'enabled' if CONFIG['preprocess_equalize'] else 'disabled'}"
         )
-    elif key == ord("u"):  # attiva l'uso delle maschere
-        CONFIG["match_use_mask"] = not CONFIG.get("match_use_mask", False)
+    elif key == ord("s"):
+        CONFIG["match_sector_enabled"] = not bool(
+            CONFIG.get("match_sector_enabled", False)
+        )
         dirty_config = True
         print(
-            f"🎭 Uso maschere {'attivato' if CONFIG['match_use_mask'] else 'disattivato'}"
+            f"🧩 Sector matching {'enabled' if CONFIG['match_sector_enabled'] else 'disabled'}"
         )
+    elif key == ord("u"):
+        CONFIG["match_use_mask"] = not bool(CONFIG.get("match_use_mask", False))
+        dirty_config = True
+        print(f"🎭 Mask usage {'enabled' if CONFIG['match_use_mask'] else 'disabled'}")
 
-    return False, dirty_config
+    return exit_loop, dirty_config
 
 
-# loop principale di acquisizione video, recupera i frame dalla fotocamera e li processa
 def frame_loop(
-    camera_idx,  # indice camera da utilizzare
-    actions_data,  # azioni caricate
-    sock,  # socket UDP a cui inviare
-    windows_focused,  # finestra di gioco selezionata da focus
-    test,  # programma avviato in modalità test
-):
+    camera_idx: int,
+    actions_data: Dict[str, Any],
+    sock: Socket,
+    windows_focused: bool,
+    test: bool,
+) -> None:
+    """
+    Main loop for capturing and processing video frames from the webcam.
 
-    last_sent_time = {}
+    Continuously reads frames from the specified camera, applies template matching
+    logic via process_frame, updates overlays when configuration changes,
+    handles interactive key commands via handle_ocv_keys, and sends matched
+    commands over a UDP socket if all conditions are met.
+
+    Parameters:
+        camera_idx (int): Index of the camera device to open (e.g., 0 for the first camera).
+        actions_data (Dict[str, Any]): Pre-loaded action definitions including templates, ROIs, and dependencies.
+        sock (Socket): UDP socket used to send action command messages (keys) to the target.
+        windows_focused (bool): Flag indicating whether the target application window has focus.
+        test (bool): If True, runs in test mode: does not send UDP commands, only logs.
+
+    Returns:
+        None
+    """
+    last_sent_time: Dict[str, float] = {}
     cap = load_camera(camera_idx)
 
-    if not CONFIG.get("headless"):
-        resize_win(
-            "Webcam Bot", CONFIG.get("window_size")[0], CONFIG.get("window_size")[1]
-        )
+    # Prepare display window if not headless
+    if not CONFIG.get("headless", False):
+        width, height = CONFIG.get("window_size", [640, 480])  # type: ignore
+        resize_win("Webcam Bot", width, height)
 
     error_count = 0
     max_errors = 10
     overlay = None
 
-    # ciclo principale
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
                 error_count += 1
                 if error_count >= max_errors:
-                    print("⚠️ Troppe letture fallite...")
+                    print("⚠️ Too many failed frame reads, exiting loop...")
                     break
                 continue
             error_count = 0
 
+            # Generate overlay on first successful frame or after config changes
             if overlay is None:
                 overlay = update_overlay(frame.shape[:2], actions_data)
 
+            # Process the current frame (matching, drawing, sending)
             process_frame(
                 frame,
                 actions_data,
@@ -566,17 +801,20 @@ def frame_loop(
                 overlay,
             )
 
+            # Handle interactive key events (exit or config adjustments)
             exit_loop, dirty_config = handle_ocv_keys()
-
             if dirty_config:
                 overlay = update_overlay(frame.shape[:2], actions_data)
 
+            # Break if exit requested by user or voice control
             if exit_loop or audio_utils.exit_event.is_set():
                 break
 
-            sleep = CONFIG.get("sleep")
-            if sleep and sleep > 0:
-                time.sleep(CONFIG.get("sleep"))
+            # Sleep interval between frames for CPU throttling
+            sleep_time = float(CONFIG.get("sleep", 0.0))
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
     finally:
         cap.release()
         cv2.destroyAllWindows()
