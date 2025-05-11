@@ -13,11 +13,11 @@ import audio_utils
 import tui_utils
 
 # --- Voice Control Flags ---
-DEF_FONT = cv2.FONT_HERSHEY_SIMPLEX
+_DEF_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 # default range for random frequencies
-BEEP_FREQ_MIN = 400.0  # Hz
-BEEP_FREQ_MAX = 600.0  # Hz
+_BEEP_FREQ_MIN = 400.0  # Hz
+_BEEP_FREQ_MAX = 600.0  # Hz
 
 
 def resize_win(name: str, width: int, height: int) -> None:
@@ -330,12 +330,12 @@ def update_overlay(size: Tuple[int, int], actions: Dict[str, Any]) -> np.ndarray
         f"Cooldown: {CONFIG['cooldown']:.1f}s | "
         f"Sleep: {CONFIG['sleep']:.2f}s"
     )
-    cv2.putText(overlay, label1, (10, 30), DEF_FONT, 1, (0, 0, 0), 2)
-    cv2.putText(overlay, label1, (10, 30), DEF_FONT, 1, (255, 255, 255), 1)
+    cv2.putText(overlay, label1, (10, 30), _DEF_FONT, 1, (0, 0, 0), 2)
+    cv2.putText(overlay, label1, (10, 30), _DEF_FONT, 1, (255, 255, 255), 1)
 
     label2 = f"Matching: {CONFIG.get('match_method')}"
-    cv2.putText(overlay, label2, (10, 65), DEF_FONT, 0.8, (0, 0, 0), 2)
-    cv2.putText(overlay, label2, (10, 65), DEF_FONT, 0.8, (0, 255, 255), 1)
+    cv2.putText(overlay, label2, (10, 65), _DEF_FONT, 0.8, (0, 0, 0), 2)
+    cv2.putText(overlay, label2, (10, 65), _DEF_FONT, 0.8, (0, 255, 255), 1)
 
     label3 = (
         f"Invert:{'Y' if CONFIG.get('preprocess_invert') else 'N'} | "
@@ -344,8 +344,8 @@ def update_overlay(size: Tuple[int, int], actions: Dict[str, Any]) -> np.ndarray
         f"Sector:{'Y' if CONFIG.get('match_sector_enabled') else 'N'} | "
         f"Mask:{'Y' if CONFIG.get('match_use_mask') else 'N'}"
     )
-    cv2.putText(overlay, label3, (10, 95), DEF_FONT, 0.8, (0, 0, 0), 2)
-    cv2.putText(overlay, label3, (10, 95), DEF_FONT, 0.8, (0, 255, 255), 1)
+    cv2.putText(overlay, label3, (10, 95), _DEF_FONT, 0.8, (0, 0, 0), 2)
+    cv2.putText(overlay, label3, (10, 95), _DEF_FONT, 0.8, (0, 255, 255), 1)
 
     # Draw ROI rectangles for each action
     for action in actions.values():
@@ -439,7 +439,7 @@ def process_frame(
                 frame,
                 label,
                 (top_left[0], top_left[1] - 10),
-                DEF_FONT,
+                _DEF_FONT,
                 0.6,
                 (0, 255, 0),
                 2,
@@ -489,7 +489,7 @@ def draw_match_preview(
             thumb_color
         )
         cv2.putText(
-            frame, key, (x_offset, y_offset - 5), DEF_FONT, 0.5, (0, 255, 255), 1
+            frame, key, (x_offset, y_offset - 5), _DEF_FONT, 0.5, (0, 255, 255), 1
         )
         x_offset += thumb_size + margin
 
@@ -641,7 +641,7 @@ def load_actions(actions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         raw_freq = info.get("beep_freq", None)
         if raw_freq is None:
             # no frequency specified: pick a random one in [400, 600]
-            beep_freq = random.uniform(BEEP_FREQ_MIN, BEEP_FREQ_MAX)
+            beep_freq = random.uniform(_BEEP_FREQ_MIN, _BEEP_FREQ_MAX)
         else:
             # user provided something: try to interpret it as a float
             try:
@@ -651,7 +651,7 @@ def load_actions(actions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                     f"⚠️ Invalid beep_freq for '{key}': {raw_freq}, "
                     f"using random frequency"
                 )
-                beep_freq = random.uniform(BEEP_FREQ_MIN, BEEP_FREQ_MAX)
+                beep_freq = random.uniform(_BEEP_FREQ_MIN, _BEEP_FREQ_MAX)
 
         # Build action entry
         actions_data[key] = {
