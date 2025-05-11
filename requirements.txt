@@ -1,8 +1,19 @@
-opencv-python>=4.5.5
-pygrabber>=0.1.4 ; platform_system == "Windows"
-pywin32>=306 ; platform_system == "Windows"
+
 pylint>=2.17.5
-vosk>=0.3.44
-sounddevice>=0.4.6
+
+# Core image/video processing
+opencv-python>=4.5.0
+
+# Numerical arrays (per il beep o altre elaborazioni)
 numpy>=1.21.0
-rich>=10.0.0
+
+# Voice control
+sounddevice>=0.4.0          # sd.RawInputStream, sd.play :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}  
+vosk>=0.3.44                # Model, KaldiRecognizer :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
+
+# TUI (Rich)
+rich>=10.0.0                # Console, Live, Table, Panel :contentReference[oaicite:4]{index=4}:contentReference[oaicite:5]{index=5}
+
+# Windows-only dependencies
+pywin32>=306 ; platform_system == "Windows"   # win32gui :contentReference[oaicite:6]{index=6}:contentReference[oaicite:7]{index=7}
+pygrabber>=0.1.4 ; platform_system == "Windows"  # DirectShow camera enumeration :contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}

@@ -13,11 +13,24 @@ from typing import Any, Dict, List
 
 from vosk import Model, KaldiRecognizer
 import sounddevice as sd
+import numpy as np
 
 from conf_utils import CONFIG
 
+# Default parameters
+_DEFAULT_DURATION = 0.025  # seconds
+_DEFAULT_FS = 44100  # sampling rate
+
+# Precompute time axis once for the default duration/fs
+_TIME_AXIS = np.linspace(
+    0, _DEFAULT_DURATION, int(_DEFAULT_FS * _DEFAULT_DURATION), endpoint=False
+)
+
+# Cache sine‐wave arrays by frequency (Hz)
+_WAVE_CACHE: Dict[float, np.ndarray] = {}
+
 # Queue for raw audio data
-audio_queue: queue.Queue[bytes] = queue.Queue()
+_AUDIO_QUEUE: queue.Queue[bytes] = queue.Queue()
 
 # Events used by the application
 active_event = threading.Event()  # Set when bot should process frames
@@ -42,7 +55,7 @@ def audio_callback(
     """
     if status:
         print(f"Warning: {status}")
-    audio_queue.put(bytes(indata))
+    _AUDIO_QUEUE.put(bytes(indata))
 
 
 def voice_control() -> None:
@@ -85,7 +98,7 @@ def voice_control() -> None:
         )
         while not stop_event.is_set():
             try:
-                data: bytes = audio_queue.get(timeout=0.5)
+                data: bytes = _AUDIO_QUEUE.get(timeout=0.5)
             except queue.Empty:
                 continue
 
@@ -105,13 +118,13 @@ def voice_control() -> None:
                     elif deactivate_cmd in words:
                         exit_event.clear()
                         active_event.clear()
-                        print("⏸️ Bot DEACTIVATED")
+                        print("🛑 Bot DEACTIVATED")
                     elif exit_cmd in words:
                         active_event.clear()
                         exit_event.set()
-                        print("🛑 Bot EXIT REQUESTED")
+                        print("👋 Bot EXIT REQUESTED")
             except Exception as e:
-                print(f"Error in voice_control loop: {e}")
+                print(f"❗ Error in voice_control loop: {e}")
                 continue
 
 
@@ -141,3 +154,35 @@ def stop_listening(thread: threading.Thread) -> None:
     stop_event.set()
     if thread.is_alive():
         thread.join()
+
+
+def beep(
+    frequency: float = 500.0, duration: float = _DEFAULT_DURATION, fs: int = _DEFAULT_FS
+) -> None:
+    """
+    Play a sine‐wave beep at the given frequency (Hz) for the given duration (s),
+    caching the waveform so that 't' and 'wave' are computed only once per frequency.
+
+    Args:
+        frequency (float): Tone frequency in Hertz.
+        duration (float): Length of the beep in seconds.
+        fs (int): Sampling rate.
+    """
+    # Choose or recompute the time axis
+    if duration == _DEFAULT_DURATION and fs == _DEFAULT_FS:
+        t = _TIME_AXIS
+    else:
+        t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+
+    # Fetch or build the sine‐wave for this frequency
+    if duration == _DEFAULT_DURATION and fs == _DEFAULT_FS:
+        wave = _WAVE_CACHE.get(frequency)
+        if wave is None:
+            wave = np.sin(2 * np.pi * frequency * t)
+            _WAVE_CACHE[frequency] = wave
+    else:
+        # For non‐default params, just compute on the fly
+        wave = np.sin(2 * np.pi * frequency * t)
+
+    sd.play(wave, fs)  # non‐blocking
+    # no sd.wait() so program continues immediately

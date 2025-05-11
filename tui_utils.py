@@ -32,10 +32,10 @@ _detect_buffer: Dict[str, float] = {}
 # Preserve the original print function
 _original_print = builtins.print
 
-UPPER_LAYOUT_SIZE: int = 14
+_UPPER_LAYOUT_SIZE: int = 14
 # Maximum number of actions per column and maximum number of columns
-MAX_ACTIONS_PER_COL: int = UPPER_LAYOUT_SIZE - 5
-MAX_COLS: int = 3
+_MAX_ACTIONS_PER_COL: int = _UPPER_LAYOUT_SIZE - 5
+_MAX_COLS: int = 3
 
 
 def tui_log(message: str) -> None:
@@ -45,7 +45,8 @@ def tui_log(message: str) -> None:
     Args:
         message (str): The log message to display in the TUI.
     """
-    _log_buffer.append(message)
+    for line in message.splitlines():
+        _log_buffer.append(line)
 
 
 def tui_detect(action: str, score: float) -> None:
@@ -98,10 +99,10 @@ def _build_detect_table() -> Table:
     """
     items = list(_detect_buffer.items())
     # Determine how many column pairs are needed, up to MAX_COLS
-    num_chunks = min(MAX_COLS, math.ceil(len(items) / MAX_ACTIONS_PER_COL))
+    num_chunks = min(_MAX_COLS, math.ceil(len(items) / _MAX_ACTIONS_PER_COL))
     # Split items into chunks of at most MAX_ACTIONS_PER_COL
     chunks = [
-        items[i * MAX_ACTIONS_PER_COL : (i + 1) * MAX_ACTIONS_PER_COL]
+        items[i * _MAX_ACTIONS_PER_COL : (i + 1) * _MAX_ACTIONS_PER_COL]
         for i in range(num_chunks)
     ]
 
@@ -112,7 +113,7 @@ def _build_detect_table() -> Table:
         table.add_column("Score", style="magenta", justify="right")
 
     # Use MAX_ACTIONS_PER_COL rows, filling empty cells with blanks for alignment
-    for row_idx in range(MAX_ACTIONS_PER_COL):
+    for row_idx in range(_MAX_ACTIONS_PER_COL):
         row_cells: list[str] = []
         for chunk in chunks:
             if row_idx < len(chunk):
@@ -136,7 +137,7 @@ def _build_layout() -> Layout:
     up_layout = Layout(name="upper")
     logs_layout = Layout(name="logs")
 
-    up_layout.size = UPPER_LAYOUT_SIZE
+    up_layout.size = _UPPER_LAYOUT_SIZE
 
     layout = Layout()
     layout.split_column(up_layout, logs_layout)

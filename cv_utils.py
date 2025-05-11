@@ -1,6 +1,7 @@
 import os
-from datetime import datetime
+import random
 import time
+from datetime import datetime
 from socket import socket as Socket
 from typing import Any, Dict, Optional, Set, Tuple
 
@@ -13,6 +14,10 @@ import tui_utils
 
 # --- Voice Control Flags ---
 DEF_FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+# default range for random frequencies
+BEEP_FREQ_MIN = 400.0  # Hz
+BEEP_FREQ_MAX = 600.0  # Hz
 
 
 def resize_win(name: str, width: int, height: int) -> None:
@@ -420,6 +425,7 @@ def process_frame(
             )
             sock.sendto(key.encode(), (CONFIG.get("ip"), CONFIG.get("port")))
             last_sent_time[key] = now
+            audio_utils.beep(frequency=action_data.get("beep_freq"))
 
         if not CONFIG.get("headless", False):
             roi = action_data.get("roi")
@@ -631,6 +637,22 @@ def load_actions(actions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             else:
                 print(f"⚠️ Maschera non trovata per '{key}': {mask_path}")
 
+        # inside your actions‐loading loop, replace the beep_freq section with:
+        raw_freq = info.get("beep_freq", None)
+        if raw_freq is None:
+            # no frequency specified: pick a random one in [400, 600]
+            beep_freq = random.uniform(BEEP_FREQ_MIN, BEEP_FREQ_MAX)
+        else:
+            # user provided something: try to interpret it as a float
+            try:
+                beep_freq = float(raw_freq)
+            except (TypeError, ValueError):
+                print(
+                    f"⚠️ Invalid beep_freq for '{key}': {raw_freq}, "
+                    f"using random frequency"
+                )
+                beep_freq = random.uniform(BEEP_FREQ_MIN, BEEP_FREQ_MAX)
+
         # Build action entry
         actions_data[key] = {
             "requires": requires,
@@ -641,6 +663,7 @@ def load_actions(actions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "template": gray,
             "dimensions": (gray.shape[1], gray.shape[0]),  # width, height
             "mask_data": mask_data,
+            "beep_freq": beep_freq,
         }
 
     return actions_data

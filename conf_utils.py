@@ -22,14 +22,14 @@ CONFIG: Dict[str, Any] = {}
 ACTIONS: Dict[str, Any] = {}
 
 # Default file paths
-CONF_DIR = "conf"
-MODELS_DIR = "model"
+_CONF_DIR = "conf"
+_MODELS_DIR = "model"
 IMG_DIR = "img"
-CONFIG_PATH: str = os.path.normpath(os.path.join(CONF_DIR, "config.json"))
-ACTIONS_PATH: str = os.path.normpath(os.path.join(CONF_DIR, "actions.json"))
+_CONFIG_PATH: str = os.path.normpath(os.path.join(_CONF_DIR, "config.json"))
+_ACTIONS_PATH: str = os.path.normpath(os.path.join(_CONF_DIR, "actions.json"))
 
 # Default values for configuration keys
-DEFAULTS: Dict[str, Any] = {
+_DEFAULTS: Dict[str, Any] = {
     "window_size": [1280, 720],
     "sleep": 0.2,
     "cooldown": 1.0,
@@ -48,7 +48,7 @@ DEFAULTS: Dict[str, Any] = {
     "match_use_mask": False,
     # Audio control defaults
     "audio_model_path": os.path.normpath(
-        os.path.join(MODELS_DIR, "vosk-model-small-it-0.22")
+        os.path.join(_MODELS_DIR, "vosk-model-small-it-0.22")
     ),
     "audio_activate_cmd": "attiva",
     "audio_deactivate_cmd": "disattiva",
@@ -72,7 +72,7 @@ def init_config() -> None:
         - Reads and writes CONFIG_PATH and target actions file
         - Updates module-level CONFIG, ACTIONS, and args
     """
-    global args, ACTIONS, ACTIONS_PATH
+    global args, _ACTIONS_PATH
 
     os.makedirs("img", exist_ok=True)
     os.makedirs("model", exist_ok=True)
@@ -120,65 +120,65 @@ def init_config() -> None:
         "--cooldown",
         "-c",
         type=float,
-        default=DEFAULTS["cooldown"],
+        default=_DEFAULTS["cooldown"],
         help="Seconds of pause between two sends of the same key",
     )
     parser.add_argument(
         "--threshold",
         "-T",
         type=float,
-        default=DEFAULTS["threshold"],
+        default=_DEFAULTS["threshold"],
         help="Matching threshold between 0.0 and 1.0",
     )
     parser.add_argument(
         "--ip",
         "-i",
         type=str,
-        default=DEFAULTS["ip"],
+        default=_DEFAULTS["ip"],
         help="IP address of the target device",
     )
     parser.add_argument(
         "--port",
         "-p",
         type=int,
-        default=DEFAULTS["port"],
+        default=_DEFAULTS["port"],
         help="UDP port of the target device",
     )
     parser.add_argument(
         "--actions-file",
         "-a",
         type=str,
-        default=DEFAULTS["actions_file"],
+        default=_DEFAULTS["actions_file"],
         help="Path to the actions JSON file",
     )
-    parser.set_defaults(headless=DEFAULTS["headless"])
+    parser.set_defaults(headless=_DEFAULTS["headless"])
 
     args = parser.parse_args()
 
     # Override default actions path if provided and store in config
-    ACTIONS_PATH = os.path.normpath(os.path.join(CONF_DIR, args.actions_file))
+    _ACTIONS_PATH = os.path.normpath(os.path.join(_CONF_DIR, args.actions_file))
 
-    CONFIG["actions_file"] = ACTIONS_PATH
+    CONFIG["actions_file"] = _ACTIONS_PATH
 
     # Reset configuration and actions if requested
     if args.reset_config:
-        if os.path.exists(CONFIG_PATH):
-            os.remove(CONFIG_PATH)
-        if os.path.exists(ACTIONS_PATH):
-            os.remove(ACTIONS_PATH)
+        if os.path.exists(_CONFIG_PATH):
+            os.remove(_CONFIG_PATH)
+        if os.path.exists(_ACTIONS_PATH):
+            os.remove(_ACTIONS_PATH)
         print("🔁 Configuration and actions reset.")
 
     CONFIG.clear()
 
     # Load existing config.json
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+    if os.path.exists(_CONFIG_PATH):
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
             CONFIG.update(json.load(f))
 
     ACTIONS.clear()
     # Load actions from specified file or fallback to embedded
-    if os.path.exists(ACTIONS_PATH):
-        with open(ACTIONS_PATH, "r", encoding="utf-8") as f:
+    if os.path.exists(_ACTIONS_PATH):
+        with open(_ACTIONS_PATH, "r", encoding="utf-8") as f:
             ACTIONS.update(json.load(f))
     else:
         embedded = CONFIG.get("actions")
@@ -189,22 +189,22 @@ def init_config() -> None:
     CONFIG["cooldown"] = (
         args.cooldown
         if args.cooldown != parser.get_default("cooldown")
-        else CONFIG.get("cooldown", DEFAULTS["cooldown"])
+        else CONFIG.get("cooldown", _DEFAULTS["cooldown"])
     )
     CONFIG["threshold"] = (
         args.threshold
         if args.threshold != parser.get_default("threshold")
-        else CONFIG.get("threshold", DEFAULTS["threshold"])
+        else CONFIG.get("threshold", _DEFAULTS["threshold"])
     )
     CONFIG["ip"] = (
         args.ip
         if args.ip != parser.get_default("ip")
-        else CONFIG.get("ip", DEFAULTS["ip"])
+        else CONFIG.get("ip", _DEFAULTS["ip"])
     )
     CONFIG["port"] = (
         args.port
         if args.port != parser.get_default("port")
-        else CONFIG.get("port", DEFAULTS["port"])
+        else CONFIG.get("port", _DEFAULTS["port"])
     )
 
     # Fill remaining keys from loaded_config or defaults
@@ -221,7 +221,7 @@ def init_config() -> None:
         "audio_exit_cmd",
         "audio_model_path",
     ]:
-        CONFIG[key] = CONFIG.get(key, DEFAULTS[key])
+        CONFIG[key] = CONFIG.get(key, _DEFAULTS[key])
 
     # Headless logic: auto-detect if not overridden
     if args.headless is None:
@@ -245,7 +245,7 @@ def save_config() -> None:
 
     Only program configuration keys are written; embedded actions are omitted.
     """
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(CONFIG, f, indent=2)
-    with open(ACTIONS_PATH, "w", encoding="utf-8") as f:
+    with open(_ACTIONS_PATH, "w", encoding="utf-8") as f:
         json.dump(ACTIONS, f, indent=2)
