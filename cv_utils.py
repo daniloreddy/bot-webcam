@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 import cv2
 import numpy as np
 
-from conf_utils import CONFIG
+from conf_utils import CONFIG, IMG_DIR
 import audio_utils
 import tui_utils
 
@@ -541,8 +541,9 @@ def take_shot(camera_idx: int) -> Optional[str]:
             break
         if key == 32:  # SPACE
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            os.makedirs("img", exist_ok=True)
-            filename = f"img/screenshot-{timestamp}.png"
+            filename = os.path.normpath(
+                os.path.join(IMG_DIR, f"screenshot-{timestamp}.png")
+            )
             cv2.imwrite(filename, frame)
             print(f"📸 Immagine salvata in {filename}")
             saved_path = filename

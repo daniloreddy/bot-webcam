@@ -12,6 +12,7 @@ import time
 from collections import deque
 from typing import Optional, Deque, Any, Dict
 import builtins
+import math
 
 from rich.console import Console
 from rich.live import Live
@@ -22,7 +23,7 @@ from rich.panel import Panel
 from conf_utils import CONFIG
 
 # Event to signal the TUI thread to stop
-_tui_stop_event: threading.Event = threading.Event()
+tui_stop_event: threading.Event = threading.Event()
 # Buffer to hold recent log messages (max 10 entries)
 _log_buffer: Deque[str] = deque(maxlen=10)
 # Buffer to hold latest detection scores per action
@@ -31,12 +32,17 @@ _detect_buffer: Dict[str, float] = {}
 # Preserve the original print function
 _original_print = builtins.print
 
+UPPER_LAYOUT_SIZE: int = 14
+# Maximum number of actions per column and maximum number of columns
+MAX_ACTIONS_PER_COL: int = UPPER_LAYOUT_SIZE - 5
+MAX_COLS: int = 3
+
 
 def tui_log(message: str) -> None:
     """
-    Append a message to the TUI log buffer.
+    Append a log message to the TUI log buffer.
 
-    Parameters:
+    Args:
         message (str): The log message to display in the TUI.
     """
     _log_buffer.append(message)
@@ -46,16 +52,16 @@ def tui_detect(action: str, score: float) -> None:
     """
     Store the latest detection score for an action.
 
-    Parameters:
+    Args:
         action (str): The action key.
-        score (float): The matching score.
+        score (float): The detection score.
     """
     _detect_buffer[action] = score
 
 
 def _build_config_table() -> Table:
     """
-    Construct a Rich Table reflecting current CONFIG values and their commands.
+    Construct a Rich Table showing current CONFIG values and their commands.
 
     Returns:
         Table: A Rich Table with configuration parameters, commands, and current values.
@@ -84,31 +90,56 @@ def _build_config_table() -> Table:
 
 def _build_detect_table() -> Table:
     """
-    Construct a Rich Table displaying the latest detection scores per action.
+    Construct a Rich Table displaying the latest detection scores per action,
+    distributed across multiple Action/Score column pairs if exceeding MAX_ACTIONS_PER_COL.
 
     Returns:
         Table: A Rich Table with action keys and their current scores.
     """
+    items = list(_detect_buffer.items())
+    # Determine how many column pairs are needed, up to MAX_COLS
+    num_chunks = min(MAX_COLS, math.ceil(len(items) / MAX_ACTIONS_PER_COL))
+    # Split items into chunks of at most MAX_ACTIONS_PER_COL
+    chunks = [
+        items[i * MAX_ACTIONS_PER_COL : (i + 1) * MAX_ACTIONS_PER_COL]
+        for i in range(num_chunks)
+    ]
+
     table = Table(title="Detection Scores")
-    table.add_column("Action", style="green", no_wrap=True)
-    table.add_column("Score", style="magenta", justify="right")
-    for key, score in _detect_buffer.items():
-        table.add_row(key, f"{score:.2f}")
+    # Add a pair of columns (Action, Score) for each chunk
+    for _ in range(num_chunks):
+        table.add_column("Action", style="green", no_wrap=True)
+        table.add_column("Score", style="magenta", justify="right")
+
+    # Use MAX_ACTIONS_PER_COL rows, filling empty cells with blanks for alignment
+    for row_idx in range(MAX_ACTIONS_PER_COL):
+        row_cells: list[str] = []
+        for chunk in chunks:
+            if row_idx < len(chunk):
+                key, score = chunk[row_idx]
+                row_cells.extend([key, f"{score:.2f}"])
+            else:
+                row_cells.extend(["", ""])
+        table.add_row(*row_cells)
+
     return table
 
 
 def _build_layout() -> Layout:
     """
-    Create a layout: top row with two tables side-by-side (config, detection),
-    bottom logs panel filling remaining space.
+    Create a layout for the TUI: top row with config and detection tables side-by-side,
+    and a logs panel below filling the remaining space.
 
     Returns:
         Layout: A Rich Layout object ready for rendering.
     """
-    # Main layout split vertical: upper (tables) and logs below
+    up_layout = Layout(name="upper")
+    logs_layout = Layout(name="logs")
+
+    up_layout.size = UPPER_LAYOUT_SIZE
+
     layout = Layout()
-    layout.split_column(Layout(name="upper", ratio=3), Layout(name="logs", ratio=1))
-    # Upper split into config and detection side-by-side
+    layout.split_column(up_layout, logs_layout)
     layout["upper"].split_row(Layout(name="config"), Layout(name="detect"))
     layout["config"].update(_build_config_table())
     layout["detect"].update(_build_detect_table())
@@ -122,12 +153,15 @@ def _build_layout() -> Layout:
 
 def _tui_loop() -> None:
     """
-    Internal loop that uses Rich Live to render and update
-    the layout periodically. Catches exceptions to avoid crashes.
+    Internal loop that uses Rich Live to render and update the layout periodically.
+    Catches exceptions to avoid crashes.
+
+    Returns:
+        None
     """
     console = Console()
-    with Live(console=console, refresh_per_second=4) as live:
-        while not _tui_stop_event.is_set():
+    with Live(console=console, refresh_per_second=2) as live:
+        while not tui_stop_event.is_set():
             try:
                 live.update(_build_layout())
             except Exception as err:
@@ -138,8 +172,7 @@ def _tui_loop() -> None:
 
 def start_tui() -> threading.Thread:
     """
-    Start the Rich-based TUI in a background thread.
-    Overrides built-in print to redirect messages into the TUI log.
+    Start the Rich-based TUI in a background thread and override print to log messages.
 
     Returns:
         threading.Thread: The thread running the TUI loop.
@@ -150,21 +183,20 @@ def start_tui() -> threading.Thread:
         tui_log(msg)
 
     builtins.print = _tui_print
-    _tui_stop_event.clear()
-    thread = threading.Thread(target=_tui_loop, daemon=True)
+    tui_stop_event.clear()
+    thread = threading.Thread(target=_tui_loop, daemon=False, name="TUIThread")
     thread.start()
     return thread
 
 
 def stop_tui(thread: Optional[threading.Thread]) -> None:
     """
-    Signal the TUI thread to stop and wait for it to finish.
-    Restores the original print function.
+    Signal the TUI thread to stop, restore the original print, and wait for it to finish.
 
-    Parameters:
+    Args:
         thread (Optional[threading.Thread]): The TUI thread to stop.
     """
     builtins.print = _original_print
     if thread and thread.is_alive():
-        _tui_stop_event.set()
+        tui_stop_event.set()
         thread.join()

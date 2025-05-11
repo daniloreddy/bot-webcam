@@ -1,9 +1,11 @@
 """
 Module conf_utils.py
 
-Handles loading, parsing, and saving the application configuration for the
+Handles loading, parsing, and saving the application configuration and actions for the
 webcam bot. Provides functions to initialize configuration from defaults,
-command-line arguments, and an existing JSON file, and to persist changes.
+command-line arguments, and existing JSON files, and to persist changes to
+separate config.json and actions.json files.
+Adds support for specifying a custom actions file via CLI with persistence.
 """
 
 import argparse
@@ -15,11 +17,16 @@ from typing import Any, Dict, Optional
 # Parsed command-line arguments
 args: Optional[argparse.Namespace] = None
 
-# Global configuration dictionary used by the application
+# Global configuration and action dictionaries
 CONFIG: Dict[str, Any] = {}
+ACTIONS: Dict[str, Any] = {}
 
-# Path to the JSON file where configuration is saved/loaded
-CONFIG_PATH: str = "config.json"
+# Default file paths
+CONF_DIR = "conf"
+MODELS_DIR = "model"
+IMG_DIR = "img"
+CONFIG_PATH: str = os.path.normpath(os.path.join(CONF_DIR, "config.json"))
+ACTIONS_PATH: str = os.path.normpath(os.path.join(CONF_DIR, "actions.json"))
 
 # Default values for configuration keys
 DEFAULTS: Dict[str, Any] = {
@@ -29,7 +36,7 @@ DEFAULTS: Dict[str, Any] = {
     "threshold": 0.85,
     "ip": "192.168.178.89",
     "port": 12345,
-    "headless": False,
+    "headless": None,
     "game_window_title": None,
     "match_method": "TM_CCOEFF_NORMED",
     "preprocess_invert": False,
@@ -40,111 +47,145 @@ DEFAULTS: Dict[str, Any] = {
     "match_sector_min_success": 3,
     "match_use_mask": False,
     # Audio control defaults
-    "audio_model_path": "model/vosk-model-small-it-0.22",
+    "audio_model_path": os.path.normpath(
+        os.path.join(MODELS_DIR, "vosk-model-small-it-0.22")
+    ),
     "audio_activate_cmd": "attiva",
     "audio_deactivate_cmd": "disattiva",
     "audio_exit_cmd": "chiudi",
+    # Actions file default
+    "actions_file": "actions.json",
 }
 
 
 def init_config() -> None:
     """
-    Initialize the global CONFIG dictionary.
+    Initialize the global CONFIG and ACTIONS dictionaries.
 
-    Merges values from DEFAULTS, an existing config.json file, and
-    command-line arguments. Handles reset of the configuration, sets
-    platform-specific defaults (e.g. headless mode), and persists
-    the result back to config.json.
+    Merges values from DEFAULTS, existing config.json and actions.json (or custom file) files,
+    and command-line arguments. Handles reset of configuration, sets
+    platform-specific defaults (e.g. headless mode), and persists the results
+    back to config.json and actions.json (or custom actions file).
 
     Side effects:
         - Parses sys.argv via argparse
-        - Reads and writes CONFIG_PATH
-        - Updates the module-level CONFIG dict
-        - Updates the module-level args
-
-    Returns:
-        None
+        - Reads and writes CONFIG_PATH and target actions file
+        - Updates module-level CONFIG, ACTIONS, and args
     """
-    global args
+    global args, ACTIONS, ACTIONS_PATH
+
+    os.makedirs("img", exist_ok=True)
+    os.makedirs("model", exist_ok=True)
+    os.makedirs("conf", exist_ok=True)
 
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(
-        description="Webcam bot per riconoscimento immagini"
-    )
+    parser = argparse.ArgumentParser(description="Webcam bot for image recognition")
     parser.add_argument(
         "--shot",
         "-s",
         action="store_true",
-        help="Scatta immagine dalla webcam e salva in img/",
+        help="Capture image from webcam and save to img/",
     )
     parser.add_argument(
-        "--test",
-        "-t",
-        action="store_true",
-        help="Modalità test: non invia, stampa solo",
+        "--test", "-t", action="store_true", help="Test mode: do not send, only print"
     )
     parser.add_argument(
-        "--reset-camera",
-        "-rc",
-        action="store_true",
-        help="Forza la selezione della webcam",
+        "--reset-camera", "-rc", action="store_true", help="Force webcam selection"
     )
     parser.add_argument(
         "--reset-resolution",
         "-rr",
         action="store_true",
-        help="Forza la selezione della risoluzione della webcam",
+        help="Force webcam resolution selection",
     )
     parser.add_argument(
         "--reset-config",
         "-r",
         action="store_true",
-        help="Resetta tutte le impostazioni salvate in config.json",
+        help="Reset all saved settings in config.json and actions file",
+    )
+    parser.add_argument(
+        "--headless",
+        dest="headless",
+        action="store_true",
+        help="Force headless mode (no GUI)",
+    )
+    parser.add_argument(
+        "--no-headless",
+        dest="headless",
+        action="store_false",
+        help="Force GUI mode (not headless)",
     )
     parser.add_argument(
         "--cooldown",
         "-c",
         type=float,
         default=DEFAULTS["cooldown"],
-        help="Secondi di pausa tra due invii dello stesso tasto",
+        help="Seconds of pause between two sends of the same key",
     )
     parser.add_argument(
         "--threshold",
         "-T",
         type=float,
         default=DEFAULTS["threshold"],
-        help="Soglia di matching tra 0.0 e 1.0",
+        help="Matching threshold between 0.0 and 1.0",
     )
     parser.add_argument(
         "--ip",
         "-i",
         type=str,
         default=DEFAULTS["ip"],
-        help="Indirizzo IP del dispositivo di destinazione",
+        help="IP address of the target device",
     )
     parser.add_argument(
         "--port",
         "-p",
         type=int,
         default=DEFAULTS["port"],
-        help="Porta UDP del dispositivo di destinazione",
+        help="UDP port of the target device",
     )
+    parser.add_argument(
+        "--actions-file",
+        "-a",
+        type=str,
+        default=DEFAULTS["actions_file"],
+        help="Path to the actions JSON file",
+    )
+    parser.set_defaults(headless=DEFAULTS["headless"])
 
     args = parser.parse_args()
 
-    # Reset configuration if requested
-    if args.reset_config and os.path.exists(CONFIG_PATH):
-        os.remove(CONFIG_PATH)
-        print("🔁 Configurazione azzerata.")
+    # Override default actions path if provided and store in config
+    ACTIONS_PATH = os.path.normpath(os.path.join(CONF_DIR, args.actions_file))
 
-    # Load existing config.json if present
+    CONFIG["actions_file"] = ACTIONS_PATH
+
+    # Reset configuration and actions if requested
+    if args.reset_config:
+        if os.path.exists(CONFIG_PATH):
+            os.remove(CONFIG_PATH)
+        if os.path.exists(ACTIONS_PATH):
+            os.remove(ACTIONS_PATH)
+        print("🔁 Configuration and actions reset.")
+
+    CONFIG.clear()
+
+    # Load existing config.json
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-        CONFIG.clear()
-        CONFIG.update(loaded)
+            CONFIG.update(json.load(f))
 
-    # Merge defaults, saved config, and CLI overrides
+    ACTIONS.clear()
+    # Load actions from specified file or fallback to embedded
+    if os.path.exists(ACTIONS_PATH):
+        with open(ACTIONS_PATH, "r", encoding="utf-8") as f:
+            ACTIONS.update(json.load(f))
+    else:
+        embedded = CONFIG.get("actions")
+        if embedded is not None:
+            ACTIONS.update(embedded)
+
+    # Merge defaults, saved config, and CLI overrides into CONFIG
     CONFIG["cooldown"] = (
         args.cooldown
         if args.cooldown != parser.get_default("cooldown")
@@ -166,7 +207,7 @@ def init_config() -> None:
         else CONFIG.get("port", DEFAULTS["port"])
     )
 
-    # Fill remaining keys from config or defaults
+    # Fill remaining keys from loaded_config or defaults
     for key in [
         "sleep",
         "window_size",
@@ -182,19 +223,19 @@ def init_config() -> None:
     ]:
         CONFIG[key] = CONFIG.get(key, DEFAULTS[key])
 
-    # Determine headless mode if not specified
-    headless_val = CONFIG.get("headless")
-    if headless_val is None:
-        # On macOS use GUI, otherwise check DISPLAY env var
-        if platform.system() == "Darwin":
-            headless_val = False
-        else:
-            headless_val = not os.environ.get("DISPLAY") and os.name != "nt"
+    # Headless logic: auto-detect if not overridden
+    if args.headless is None:
+        headless_val = CONFIG.get("headless")
+        if headless_val is None:
+            if platform.system() == "Darwin":
+                headless_val = False
+            else:
+                headless_val = not os.environ.get("DISPLAY") and os.name != "nt"
         CONFIG["headless"] = headless_val
     else:
-        CONFIG["headless"] = bool(headless_val)
+        CONFIG["headless"] = args.headless
 
-    # Persist configuration
+    # Persist configuration and actions to disk
     save_config()
 
 
@@ -202,10 +243,9 @@ def save_config() -> None:
     """
     Write the current CONFIG dictionary to CONFIG_PATH in JSON format.
 
-    Overwrites any existing file. Creates human-readable indent.
-
-    Returns:
-        None
+    Only program configuration keys are written; embedded actions are omitted.
     """
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(CONFIG, f, indent=2)
+    with open(ACTIONS_PATH, "w", encoding="utf-8") as f:
+        json.dump(ACTIONS, f, indent=2)

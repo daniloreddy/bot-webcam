@@ -29,7 +29,7 @@ except ImportError:
 import cv_utils
 import audio_utils
 import conf_utils
-from conf_utils import CONFIG
+from conf_utils import CONFIG, ACTIONS
 import tui_utils
 
 
@@ -257,9 +257,9 @@ def main() -> None:
             should_check = False
 
         # Load action definitions
-        actions_cfg = CONFIG.get("actions", {})  # type: ignore
+        actions_cfg = ACTIONS.get("actions", {})  # type: ignore
         if not actions_cfg:
-            print("❌ No actions defined in config.json")
+            print("❌ No actions defined")
             return
 
         actions_data = cv_utils.load_actions(actions_cfg)  # type: ignore
